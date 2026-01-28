@@ -21,55 +21,57 @@ st.set_page_config(
 )
 
 # ============================================================================
-# THEME CONFIGURATION - Classic Black & White
+# THEME CONFIGURATION - Bloomberg Terminal Style
 # ============================================================================
 THEME = {
-    # Backgrounds - Pure black/charcoal
+    # Backgrounds - Pure terminal black
     'bg_primary': '#000000',
     'bg_secondary': '#0a0a0a',
-    'bg_card': '#111111',
-    'bg_hover': '#1a1a1a',
-    'card_bg': '#111111',
+    'bg_card': '#0d0d0d',
+    'bg_hover': '#141414',
+    'card_bg': '#0d0d0d',
 
-    # Accent colors - Monochrome with subtle warmth
-    'accent_primary': '#ffffff',
-    'accent_secondary': '#888888',
-    'accent_tertiary': '#666666',
+    # Accent colors - Bloomberg orange
+    'accent_primary': '#FF6600',
+    'accent_secondary': '#CC5200',
+    'accent_tertiary': '#994000',
 
-    # Signal colors - Classic finance
-    'opportunity': '#ffffff',
-    'bullish': '#ffffff',
-    'bearish': '#666666',
-    'warning': '#999999',
-    'neutral': '#555555',
-    'positive': '#ffffff',
-    'negative': '#666666',
+    # Signal colors - Muted professional
+    'opportunity': '#FF6600',
+    'bullish': '#00C853',
+    'bearish': '#FF3D00',
+    'warning': '#888888',
+    'neutral': '#444444',
+    'positive': '#00C853',
+    'negative': '#FF3D00',
+    'green': '#00C853',
+    'red': '#FF3D00',
 
-    # Text hierarchy - High contrast
-    'text_primary': '#ffffff',
-    'text_secondary': '#aaaaaa',
-    'text_muted': '#666666',
+    # Text hierarchy - Terminal style
+    'text_primary': '#E0E0E0',
+    'text_secondary': '#888888',
+    'text_muted': '#555555',
 
     # Borders and lines
-    'border': '#222222',
-    'border_light': '#333333',
-    'grid': '#1a1a1a',
+    'border': '#1a1a1a',
+    'border_light': '#252525',
+    'grid': '#141414',
 
-    # Chart colors - Monochrome elegance
-    'chart_up': '#ffffff',
-    'chart_down': '#555555',
-    'chart_line': '#ffffff',
-    'chart_volume': '#444444',
-    'chart_ma1': '#888888',
-    'chart_ma2': '#555555',
-    'chart_bb': '#666666',
-    'chart_grid': '#1a1a1a',
+    # Chart colors
+    'chart_up': '#00C853',
+    'chart_down': '#FF3D00',
+    'chart_line': '#E0E0E0',
+    'chart_volume': '#333333',
+    'chart_ma1': '#FF6600',
+    'chart_ma2': '#666666',
+    'chart_bb': '#555555',
+    'chart_grid': '#141414',
 
-    # Glows and shadows - Subtle
-    'glow_primary': 'rgba(255, 255, 255, 0.1)',
-    'glow_success': 'rgba(255, 255, 255, 0.15)',
-    'glow_warning': 'rgba(255, 255, 255, 0.1)',
-    'glow_opportunity': 'rgba(255, 255, 255, 0.15)',
+    # No glows - flat terminal look
+    'glow_primary': 'rgba(0, 0, 0, 0)',
+    'glow_success': 'rgba(0, 0, 0, 0)',
+    'glow_warning': 'rgba(0, 0, 0, 0)',
+    'glow_opportunity': 'rgba(0, 0, 0, 0)',
 }
 
 # ============================================================================
@@ -2425,16 +2427,16 @@ with main_tabs[0]:
     mover_cols = st.columns(2)
 
     with mover_cols[0]:
-        st.markdown(f"<h3 style='color: {THEME['positive']}; margin-bottom: 15px;'>🚀 Top Gainers</h3>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='color: {THEME['green']}; margin-bottom: 15px;'>🚀 Top Gainers</h3>", unsafe_allow_html=True)
         if movers['gainers']:
             for stock in movers['gainers'][:5]:
                 st.markdown(f"""
-                    <div style='background: {THEME['card_bg']}; padding: 12px; border-radius: 6px; margin-bottom: 8px; border-left: 3px solid {THEME['positive']}; display: flex; justify-content: space-between; align-items: center;'>
+                    <div style='background: {THEME['card_bg']}; padding: 12px; border-radius: 6px; margin-bottom: 8px; border-left: 3px solid {THEME['green']}; display: flex; justify-content: space-between; align-items: center;'>
                         <div>
-                            <span style='color: {THEME['text_primary']}; font-weight: 600;'>{stock['ticker']}</span>
+                            <span style='color: {THEME['green']}; font-weight: 700;'>{stock['ticker']}</span>
                             <span style='color: {THEME['text_muted']}; font-size: 12px; margin-left: 10px;'>${stock['price']:.2f}</span>
                         </div>
-                        <span style='color: {THEME['positive']}; font-weight: 600;'>+{stock['change']:.2f}%</span>
+                        <span style='color: {THEME['green']}; font-weight: 700;'>+{stock['change']:.2f}%</span>
                     </div>
                 """, unsafe_allow_html=True)
 
@@ -2463,16 +2465,16 @@ with main_tabs[0]:
                     pass
 
     with mover_cols[1]:
-        st.markdown(f"<h3 style='color: {THEME['negative']}; margin-bottom: 15px;'>📉 Top Losers</h3>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='color: {THEME['red']}; margin-bottom: 15px;'>📉 Top Losers</h3>", unsafe_allow_html=True)
         if movers['losers']:
             for stock in movers['losers'][:5]:
                 st.markdown(f"""
-                    <div style='background: {THEME['card_bg']}; padding: 12px; border-radius: 6px; margin-bottom: 8px; border-left: 3px solid {THEME['negative']}; display: flex; justify-content: space-between; align-items: center;'>
+                    <div style='background: {THEME['card_bg']}; padding: 12px; border-radius: 6px; margin-bottom: 8px; border-left: 3px solid {THEME['red']}; display: flex; justify-content: space-between; align-items: center;'>
                         <div>
-                            <span style='color: {THEME['text_primary']}; font-weight: 600;'>{stock['ticker']}</span>
+                            <span style='color: {THEME['red']}; font-weight: 700;'>{stock['ticker']}</span>
                             <span style='color: {THEME['text_muted']}; font-size: 12px; margin-left: 10px;'>${stock['price']:.2f}</span>
                         </div>
-                        <span style='color: {THEME['negative']}; font-weight: 600;'>{stock['change']:.2f}%</span>
+                        <span style='color: {THEME['red']}; font-weight: 700;'>{stock['change']:.2f}%</span>
                     </div>
                 """, unsafe_allow_html=True)
 
@@ -2503,17 +2505,17 @@ with main_tabs[0]:
     st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
 
     # Most Active
-    st.markdown(f"<h3 style='color: {THEME['opportunity']}; margin-bottom: 15px;'>🔥 Most Active</h3>", unsafe_allow_html=True)
+    st.markdown(f"<h3 style='color: {THEME['text_primary']}; margin-bottom: 15px;'>🔥 Most Active</h3>", unsafe_allow_html=True)
     if movers['active']:
         active_cols = st.columns(5)
         for i, stock in enumerate(movers['active'][:5]):
             with active_cols[i]:
-                color = THEME['positive'] if stock['change'] >= 0 else THEME['negative']
+                color = THEME['green'] if stock['change'] >= 0 else THEME['red']
                 st.markdown(f"""
                     <div style='background: {THEME['card_bg']}; padding: 15px; border-radius: 8px; text-align: center; border: 1px solid {THEME['border']};'>
-                        <div style='color: {THEME['text_primary']}; font-weight: 700; font-size: 18px;'>{stock['ticker']}</div>
+                        <div style='color: {color}; font-weight: 700; font-size: 18px;'>{stock['ticker']}</div>
                         <div style='color: {THEME['text_muted']}; font-size: 13px;'>${stock['price']:.2f}</div>
-                        <div style='color: {color}; font-size: 14px; font-weight: 600;'>{stock['change']:+.2f}%</div>
+                        <div style='color: {color}; font-size: 14px; font-weight: 700;'>{stock['change']:+.2f}%</div>
                         <div style='color: {THEME['text_muted']}; font-size: 10px; margin-top: 5px;'>Vol: {stock['volume']/1e6:.1f}M</div>
                     </div>
                 """, unsafe_allow_html=True)
@@ -3608,9 +3610,11 @@ with main_tabs[6]:
     if 'sim_trades' not in st.session_state:
         st.session_state['sim_trades'] = []
 
-    # Helper function to get price
-    def get_sim_price(ticker, date):
+    # Helper function to get price (cached for speed)
+    @st.cache_data(ttl=600, show_spinner=False)
+    def get_sim_price(ticker: str, date_str: str):
         try:
+            date = datetime.strptime(date_str, '%Y-%m-%d')
             start = (date - timedelta(days=10)).strftime('%Y-%m-%d')
             end = (date + timedelta(days=1)).strftime('%Y-%m-%d')
             data = yf.Ticker(ticker).history(start=start, end=end)
@@ -3659,8 +3663,9 @@ with main_tabs[6]:
         # Calculate total value
         total_value = cash
         prices = {}
+        date_str = current_date.strftime('%Y-%m-%d')
         for ticker, shares in holdings.items():
-            p = get_sim_price(ticker, current_date)
+            p = get_sim_price(ticker, date_str)
             if p:
                 prices[ticker] = p
                 total_value += shares * p
@@ -3730,7 +3735,7 @@ with main_tabs[6]:
             lookup_ticker = st.text_input("Ticker", placeholder="AAPL, NVDA, TSLA...", label_visibility="collapsed").upper().strip()
 
             if lookup_ticker:
-                price = get_sim_price(lookup_ticker, current_date)
+                price = get_sim_price(lookup_ticker, date_str)
                 if price:
                     owned = holdings.get(lookup_ticker, 0)
                     max_buy = int(cash / price) if price > 0 else 0
@@ -3786,20 +3791,53 @@ with main_tabs[6]:
                     st.warning(f"No data for {lookup_ticker} on this date")
 
         with right:
-            st.markdown(f"<div style='color: {THEME['text_muted']}; font-size: 10px; margin-bottom: 10px;'>HOLDINGS</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='color: {THEME['text_muted']}; font-size: 10px; margin-bottom: 10px;'>HOLDINGS (click to expand)</div>", unsafe_allow_html=True)
 
             if holdings:
                 for ticker, shares in holdings.items():
                     p = prices.get(ticker, 0)
                     val = shares * p
-                    st.markdown(f"""
-                    <div style='background: {THEME["card_bg"]}; padding: 12px; border-radius: 4px; border: 1px solid {THEME["border"]}; margin-bottom: 8px;'>
-                        <div style='display: flex; justify-content: space-between;'>
-                            <div><span style='color: {THEME["text_primary"]}; font-weight: 600;'>{ticker}</span><span style='color: {THEME["text_muted"]}; font-size: 11px; margin-left: 8px;'>{shares} @ ${p:.2f}</span></div>
-                            <div style='color: {THEME["text_primary"]}; font-weight: 600;'>${val:,.0f}</div>
+                    cost_basis = 0
+                    shares_bought = 0
+                    for t in st.session_state.get('sim_trades', []):
+                        if t['ticker'] == ticker and t['action'] == 'BUY':
+                            cost_basis += t['qty'] * t['price']
+                            shares_bought += t['qty']
+                    avg_cost = cost_basis / shares_bought if shares_bought > 0 else p
+                    gain_loss = (p - avg_cost) * shares
+                    gain_pct = ((p - avg_cost) / avg_cost * 100) if avg_cost > 0 else 0
+                    gl_color = THEME['green'] if gain_loss >= 0 else THEME['red']
+
+                    with st.expander(f"{ticker} — {shares} shares — ${val:,.0f}"):
+                        st.markdown(f"""
+                        <div style='padding: 5px 0;'>
+                            <div style='display: flex; justify-content: space-between; margin-bottom: 8px;'>
+                                <span style='color: {THEME["text_muted"]};'>Current Price</span>
+                                <span style='color: {THEME["text_primary"]}; font-weight: 600;'>${p:.2f}</span>
+                            </div>
+                            <div style='display: flex; justify-content: space-between; margin-bottom: 8px;'>
+                                <span style='color: {THEME["text_muted"]};'>Avg Cost</span>
+                                <span style='color: {THEME["text_primary"]};'>${avg_cost:.2f}</span>
+                            </div>
+                            <div style='display: flex; justify-content: space-between; margin-bottom: 8px;'>
+                                <span style='color: {THEME["text_muted"]};'>Shares</span>
+                                <span style='color: {THEME["text_primary"]};'>{shares}</span>
+                            </div>
+                            <div style='display: flex; justify-content: space-between; margin-bottom: 8px;'>
+                                <span style='color: {THEME["text_muted"]};'>Market Value</span>
+                                <span style='color: {THEME["text_primary"]}; font-weight: 600;'>${val:,.2f}</span>
+                            </div>
+                            <div style='display: flex; justify-content: space-between; padding-top: 8px; border-top: 1px solid {THEME["border"]};'>
+                                <span style='color: {THEME["text_muted"]};'>Gain/Loss</span>
+                                <span style='color: {gl_color}; font-weight: 700;'>{gain_pct:+.1f}% (${gain_loss:+,.0f})</span>
+                            </div>
                         </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                        """, unsafe_allow_html=True)
+                        if st.button(f"SELL ALL {ticker}", key=f"sell_all_{ticker}", use_container_width=True):
+                            st.session_state['sim_cash'] += val
+                            st.session_state['sim_trades'].append({'date': current_date.strftime('%Y-%m-%d'), 'action': 'SELL', 'ticker': ticker, 'qty': shares, 'price': p})
+                            del st.session_state['sim_holdings'][ticker]
+                            st.rerun()
             else:
                 st.markdown(f"<div style='color: {THEME['text_muted']}; font-style: italic; padding: 20px 0;'>No positions yet</div>", unsafe_allow_html=True)
 
