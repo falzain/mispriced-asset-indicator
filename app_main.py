@@ -2183,8 +2183,9 @@ class StockSimulator:
 
 
 @st.cache_data(ttl=300)
+@st.cache_data(ttl=120)
 def get_market_movers() -> dict:
-    """Fetch top gainers, losers, and most active stocks"""
+    """Fetch top gainers, losers, and most active stocks - batch download for speed"""
     movers = {'gainers': [], 'losers': [], 'active': []}
 
     # Popular stocks to check
@@ -2194,28 +2195,32 @@ def get_market_movers() -> dict:
 
     stock_data = []
 
-    for ticker in watchlist:
-        try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period='2d')
-            if len(hist) >= 2:
-                current = hist['Close'].iloc[-1]
-                prev = hist['Close'].iloc[-2]
-                change_pct = ((current - prev) / prev) * 100
-                volume = hist['Volume'].iloc[-1]
+    try:
+        # Batch download - much faster than individual calls
+        data = yf.download(watchlist, period='2d', progress=False, threads=True)
+        if not data.empty:
+            for ticker in watchlist:
+                try:
+                    if ticker in data['Close'].columns:
+                        closes = data['Close'][ticker].dropna()
+                        volumes = data['Volume'][ticker].dropna()
+                        if len(closes) >= 2:
+                            current = closes.iloc[-1]
+                            prev = closes.iloc[-2]
+                            change_pct = ((current - prev) / prev) * 100
+                            volume = volumes.iloc[-1] if len(volumes) > 0 else 0
 
-                info = stock.info
-                name = info.get('shortName', ticker)
-
-                stock_data.append({
-                    'ticker': ticker,
-                    'name': name[:20],
-                    'price': current,
-                    'change': change_pct,
-                    'volume': volume
-                })
-        except:
-            continue
+                            stock_data.append({
+                                'ticker': ticker,
+                                'name': ticker,
+                                'price': current,
+                                'change': change_pct,
+                                'volume': volume
+                            })
+                except:
+                    continue
+    except:
+        pass
 
     if stock_data:
         # Sort for gainers and losers
@@ -2349,22 +2354,28 @@ st.markdown("<div class='subtitle'>Forensic Investment Intelligence • Distorti
 # ============================================================================
 # LIVE TICKER TAPE
 # ============================================================================
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def get_ticker_tape_data():
-    """Get live ticker data for the tape"""
+    """Get live ticker data for the tape - batch download for speed"""
     tickers = ['SPY', 'QQQ', 'DIA', 'IWM', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'TSLA', 'META', 'BTC-USD', 'GC=F', 'CL=F']
     tape_data = []
-    for t in tickers:
-        try:
-            stock = yf.Ticker(t)
-            hist = stock.history(period='2d')
-            if len(hist) >= 2:
-                current = hist['Close'].iloc[-1]
-                prev = hist['Close'].iloc[-2]
-                change = ((current - prev) / prev) * 100
-                tape_data.append({'ticker': t, 'price': current, 'change': change})
-        except:
-            pass
+    try:
+        # Batch download - much faster than individual calls
+        data = yf.download(tickers, period='2d', progress=False, threads=True)
+        if not data.empty:
+            for t in tickers:
+                try:
+                    if t in data['Close'].columns:
+                        closes = data['Close'][t].dropna()
+                        if len(closes) >= 2:
+                            current = closes.iloc[-1]
+                            prev = closes.iloc[-2]
+                            change = ((current - prev) / prev) * 100
+                            tape_data.append({'ticker': t, 'price': current, 'change': change})
+                except:
+                    pass
+    except:
+        pass
     return tape_data
 
 ticker_tape = get_ticker_tape_data()
@@ -2388,38 +2399,56 @@ if ticker_tape:
 # ============================================================================
 main_tabs = st.tabs(["🏠 MARKET OVERVIEW", "🎯 SINGLE ASSET", "🔬 FORENSIC LAB", "⚡ RETAIL EDGE", "📊 MULTI-ASSET", "🌍 MACRO", "🎮 SIMULATOR"])
 
+@st.cache_data(ttl=120)
+def get_indices_data():
+    """Batch fetch indices data for speed"""
+    indices_tickers = ['SPY', 'QQQ', 'DIA', 'IWM']
+    indices_data = {}
+    try:
+        data = yf.download(indices_tickers, period='5d', progress=False, threads=True)
+        if not data.empty:
+            for ticker in indices_tickers:
+                try:
+                    if ticker in data['Close'].columns:
+                        closes = data['Close'][ticker].dropna()
+                        if len(closes) >= 2:
+                            indices_data[ticker] = {
+                                'current': closes.iloc[-1],
+                                'prev': closes.iloc[-2],
+                                'change': ((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2]) * 100
+                            }
+                except:
+                    pass
+    except:
+        pass
+    return indices_data
+
 # ============================================================================
 # TAB 0: MARKET OVERVIEW (HOME)
 # ============================================================================
 with main_tabs[0]:
     st.markdown(f"<h2 style='color: {THEME['text_primary']}; margin-bottom: 20px;'>📈 Today's Market Pulse</h2>", unsafe_allow_html=True)
 
-    # Get market movers
+    # Get market movers and indices (cached)
     movers = get_market_movers()
+    indices_data = get_indices_data()
 
     # Top row - Major indices
     idx_cols = st.columns(4)
     indices = [('SPY', 'S&P 500'), ('QQQ', 'NASDAQ'), ('DIA', 'DOW'), ('IWM', 'Russell 2000')]
     for i, (ticker, name) in enumerate(indices):
         with idx_cols[i]:
-            try:
-                stock = yf.Ticker(ticker)
-                hist = stock.history(period='5d')
-                if len(hist) >= 2:
-                    current = hist['Close'].iloc[-1]
-                    prev = hist['Close'].iloc[-2]
-                    change = ((current - prev) / prev) * 100
-                    color = THEME['positive'] if change >= 0 else THEME['negative']
-                    arrow = '▲' if change >= 0 else '▼'
-                    st.markdown(f"""
-                        <div style='background: {THEME['card_bg']}; padding: 15px; border-radius: 8px; border: 1px solid {THEME['border']};'>
-                            <div style='color: {THEME['text_muted']}; font-size: 11px; text-transform: uppercase;'>{name}</div>
-                            <div style='color: {THEME['text_primary']}; font-size: 24px; font-weight: 700;'>${current:.2f}</div>
-                            <div style='color: {color}; font-size: 14px;'>{arrow} {change:+.2f}%</div>
-                        </div>
-                    """, unsafe_allow_html=True)
-            except:
-                pass
+            if ticker in indices_data:
+                idx = indices_data[ticker]
+                color = THEME['positive'] if idx['change'] >= 0 else THEME['negative']
+                arrow = '▲' if idx['change'] >= 0 else '▼'
+                st.markdown(f"""
+                    <div style='background: {THEME['card_bg']}; padding: 15px; border-radius: 8px; border: 1px solid {THEME['border']};'>
+                        <div style='color: {THEME['text_muted']}; font-size: 11px; text-transform: uppercase;'>{name}</div>
+                        <div style='color: {THEME['text_primary']}; font-size: 24px; font-weight: 700;'>${idx['current']:.2f}</div>
+                        <div style='color: {color}; font-size: 14px;'>{arrow} {idx['change']:+.2f}%</div>
+                    </div>
+                """, unsafe_allow_html=True)
 
     st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
 
@@ -2578,55 +2607,52 @@ with main_tabs[1]:
         else:
             weights = {'valuation': 0.25, 'quality': 0.25, 'growth': 0.20, 'momentum': 0.15, 'risk': 0.15}
 
-        # Load data if needed
+        # Load data if needed (silent loading - no visible spinner)
         if not st.session_state['analysis_data'] or st.session_state['analysis_data'].get('ticker') != ticker:
-            with st.spinner(f"🔍 Analyzing {ticker}..."):
-                try:
-                    info = DataEngine.get_info(ticker)
-                    if not info or 'currentPrice' not in info:
-                        st.error(f"❌ Could not find data for {ticker}")
-                        st.stop()
-
-                    hist = DataEngine.get_history(ticker, period='2y')
-                    if hist.empty:
-                        st.error("❌ No historical data available")
-                        st.stop()
-
-                    fundamentals = get_fundamental_metrics(info)
-                    news = DataEngine.get_news(ticker)
-                    earnings = DataEngine.get_earnings_dates(ticker)
-                    financials = DataEngine.get_financials(ticker)
-                    scores, total_score, metrics = calculate_smart_score(info, hist, fundamentals, weights)
-
-                    # Forensic analysis
-                    distortion = ForensicLab.analyze_distortion(ticker, info, financials)
-                    quality = ForensicLab.calculate_quality_of_earnings(ticker, financials)
-
-                    # Retail edge data
-                    inst_holders = DataEngine.get_institutional_holders(ticker)
-                    insider_tx = DataEngine.get_insider_transactions(ticker)
-                    options_data = DataEngine.get_options_chain(ticker)
-
-                    st.session_state['analysis_data'] = {
-                        'ticker': ticker,
-                        'info': info,
-                        'hist': hist,
-                        'fundamentals': fundamentals,
-                        'news': news,
-                        'earnings': earnings,
-                        'financials': financials,
-                        'scores': scores,
-                        'total_score': total_score,
-                        'metrics': metrics,
-                        'distortion': distortion,
-                        'quality': quality,
-                        'inst_holders': inst_holders,
-                        'insider_tx': insider_tx,
-                        'options_data': options_data
-                    }
-                except Exception as e:
-                    st.error(f"❌ Error loading data: {str(e)}")
+            try:
+                info = DataEngine.get_info(ticker)
+                if not info or 'currentPrice' not in info:
+                    st.error(f"Could not find data for {ticker}")
                     st.stop()
+
+                hist = DataEngine.get_history(ticker, period='2y')
+                if hist.empty:
+                    st.error("No historical data available")
+                    st.stop()
+
+                fundamentals = get_fundamental_metrics(info)
+                news = DataEngine.get_news(ticker)
+                financials = DataEngine.get_financials(ticker)
+                scores, total_score, metrics = calculate_smart_score(info, hist, fundamentals, weights)
+
+                # Forensic analysis
+                distortion = ForensicLab.analyze_distortion(ticker, info, financials)
+                quality = ForensicLab.calculate_quality_of_earnings(ticker, financials)
+
+                # Retail edge data
+                inst_holders = DataEngine.get_institutional_holders(ticker)
+                insider_tx = DataEngine.get_insider_transactions(ticker)
+                options_data = DataEngine.get_options_chain(ticker)
+
+                st.session_state['analysis_data'] = {
+                    'ticker': ticker,
+                    'info': info,
+                    'hist': hist,
+                    'fundamentals': fundamentals,
+                    'news': news,
+                    'financials': financials,
+                    'scores': scores,
+                    'total_score': total_score,
+                    'metrics': metrics,
+                    'distortion': distortion,
+                    'quality': quality,
+                    'inst_holders': inst_holders,
+                    'insider_tx': insider_tx,
+                    'options_data': options_data
+                }
+            except Exception as e:
+                st.error(f"Error loading data: {str(e)}")
+                st.stop()
 
         data = st.session_state['analysis_data']
         info = data['info']
@@ -2687,7 +2713,7 @@ with main_tabs[1]:
         st.markdown("---")
 
         # Analysis Sub-tabs
-        analysis_tabs = st.tabs(["📈 CHART", "📰 NEWS", "📅 EARNINGS", "💎 FUNDAMENTALS", "💰 VALUATION", "🔬 FORENSIC"])
+        analysis_tabs = st.tabs(["📈 CHART", "📰 NEWS", "📊 FINANCIALS", "💎 FUNDAMENTALS", "💰 VALUATION", "🔬 FORENSIC"])
 
         # CHART TAB
         with analysis_tabs[0]:
@@ -2855,64 +2881,157 @@ with main_tabs[1]:
             else:
                 st.info("No recent news available")
 
-        # EARNINGS TAB
+        # FINANCIALS TAB
         with analysis_tabs[2]:
-            st.markdown("<div class='section-header'>Earnings Calendar & History</div>", unsafe_allow_html=True)
+            st.markdown("<div class='section-header'>Company Financials</div>", unsafe_allow_html=True)
 
-            earnings_df = data['earnings']
+            # Get company info for links
+            company_name = info.get('longName', ticker)
 
-            if not earnings_df.empty:
-                # Find next earnings date
-                now = datetime.now()
-                future_earnings = earnings_df[earnings_df.index > now]
+            # Financial Links Section
+            st.markdown(f"""
+            <div style='margin-bottom: 24px;'>
+                <div style='color: {THEME["text_muted"]}; font-size: 12px; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.1em;'>
+                    Detailed Financial Statements & SEC Filings
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
-                if not future_earnings.empty:
-                    next_earnings = future_earnings.index[0]
-                    days_until = (next_earnings - now).days
+            # Create link cards
+            fin_col1, fin_col2 = st.columns(2)
 
-                    st.markdown(f"""
-                    <div class='opportunity-card' style='text-align: center; margin-bottom: 24px;'>
-                        <div style='font-size: 11px; color: {THEME["text_muted"]}; text-transform: uppercase; letter-spacing: 0.1em;'>Next Earnings Report</div>
-                        <div class='earnings-date'>{next_earnings.strftime('%b %d, %Y')}</div>
-                        <div class='earnings-countdown'>{days_until} days away</div>
+            with fin_col1:
+                # SEC Filings
+                st.markdown(f"""
+                <a href='https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={ticker}&type=10&dateb=&owner=include&count=40' target='_blank' style='text-decoration: none;'>
+                    <div style='background: {THEME["card_bg"]}; border: 1px solid {THEME["border"]}; border-radius: 12px; padding: 20px; margin-bottom: 16px; transition: all 0.3s ease;' onmouseover="this.style.borderColor='{THEME["accent_primary"]}'" onmouseout="this.style.borderColor='{THEME["border"]}'">
+                        <div style='display: flex; align-items: center; gap: 12px;'>
+                            <div style='font-size: 28px;'>📋</div>
+                            <div>
+                                <div style='color: {THEME["text_primary"]}; font-weight: 700; font-size: 15px;'>SEC EDGAR Filings</div>
+                                <div style='color: {THEME["text_muted"]}; font-size: 12px;'>10-K, 10-Q, 8-K Reports</div>
+                            </div>
+                        </div>
                     </div>
-                    """, unsafe_allow_html=True)
+                </a>
+                """, unsafe_allow_html=True)
 
-                # Earnings history
-                st.markdown("<div class='subsection-header'>Earnings History</div>", unsafe_allow_html=True)
+                # Yahoo Finance Financials
+                st.markdown(f"""
+                <a href='https://finance.yahoo.com/quote/{ticker}/financials/' target='_blank' style='text-decoration: none;'>
+                    <div style='background: {THEME["card_bg"]}; border: 1px solid {THEME["border"]}; border-radius: 12px; padding: 20px; margin-bottom: 16px; transition: all 0.3s ease;' onmouseover="this.style.borderColor='{THEME["accent_primary"]}'" onmouseout="this.style.borderColor='{THEME["border"]}'">
+                        <div style='display: flex; align-items: center; gap: 12px;'>
+                            <div style='font-size: 28px;'>💰</div>
+                            <div>
+                                <div style='color: {THEME["text_primary"]}; font-weight: 700; font-size: 15px;'>Income Statement</div>
+                                <div style='color: {THEME["text_muted"]}; font-size: 12px;'>Revenue, Earnings, Margins</div>
+                            </div>
+                        </div>
+                    </div>
+                </a>
+                """, unsafe_allow_html=True)
 
-                earnings_display = earnings_df.head(8).copy()
-                earnings_display.index = earnings_display.index.strftime('%Y-%m-%d')
+                # Balance Sheet
+                st.markdown(f"""
+                <a href='https://finance.yahoo.com/quote/{ticker}/balance-sheet/' target='_blank' style='text-decoration: none;'>
+                    <div style='background: {THEME["card_bg"]}; border: 1px solid {THEME["border"]}; border-radius: 12px; padding: 20px; margin-bottom: 16px; transition: all 0.3s ease;' onmouseover="this.style.borderColor='{THEME["accent_primary"]}'" onmouseout="this.style.borderColor='{THEME["border"]}'">
+                        <div style='display: flex; align-items: center; gap: 12px;'>
+                            <div style='font-size: 28px;'>📊</div>
+                            <div>
+                                <div style='color: {THEME["text_primary"]}; font-weight: 700; font-size: 15px;'>Balance Sheet</div>
+                                <div style='color: {THEME["text_muted"]}; font-size: 12px;'>Assets, Liabilities, Equity</div>
+                            </div>
+                        </div>
+                    </div>
+                </a>
+                """, unsafe_allow_html=True)
 
-                # Format columns if they exist
-                display_cols = []
-                if 'EPS Estimate' in earnings_display.columns:
-                    display_cols.append('EPS Estimate')
-                if 'Reported EPS' in earnings_display.columns:
-                    display_cols.append('Reported EPS')
-                if 'Surprise(%)' in earnings_display.columns:
-                    display_cols.append('Surprise(%)')
+            with fin_col2:
+                # Cash Flow
+                st.markdown(f"""
+                <a href='https://finance.yahoo.com/quote/{ticker}/cash-flow/' target='_blank' style='text-decoration: none;'>
+                    <div style='background: {THEME["card_bg"]}; border: 1px solid {THEME["border"]}; border-radius: 12px; padding: 20px; margin-bottom: 16px; transition: all 0.3s ease;' onmouseover="this.style.borderColor='{THEME["accent_primary"]}'" onmouseout="this.style.borderColor='{THEME["border"]}'">
+                        <div style='display: flex; align-items: center; gap: 12px;'>
+                            <div style='font-size: 28px;'>💵</div>
+                            <div>
+                                <div style='color: {THEME["text_primary"]}; font-weight: 700; font-size: 15px;'>Cash Flow Statement</div>
+                                <div style='color: {THEME["text_muted"]}; font-size: 12px;'>Operating, Investing, Financing</div>
+                            </div>
+                        </div>
+                    </div>
+                </a>
+                """, unsafe_allow_html=True)
 
-                if display_cols:
-                    st.dataframe(earnings_display[display_cols], use_container_width=True)
+                # Analyst Estimates
+                st.markdown(f"""
+                <a href='https://finance.yahoo.com/quote/{ticker}/analysis/' target='_blank' style='text-decoration: none;'>
+                    <div style='background: {THEME["card_bg"]}; border: 1px solid {THEME["border"]}; border-radius: 12px; padding: 20px; margin-bottom: 16px; transition: all 0.3s ease;' onmouseover="this.style.borderColor='{THEME["accent_primary"]}'" onmouseout="this.style.borderColor='{THEME["border"]}'">
+                        <div style='display: flex; align-items: center; gap: 12px;'>
+                            <div style='font-size: 28px;'>📈</div>
+                            <div>
+                                <div style='color: {THEME["text_primary"]}; font-weight: 700; font-size: 15px;'>Analyst Estimates</div>
+                                <div style='color: {THEME["text_muted"]}; font-size: 12px;'>EPS & Revenue Forecasts</div>
+                            </div>
+                        </div>
+                    </div>
+                </a>
+                """, unsafe_allow_html=True)
 
-                    # Surprise chart
-                    if 'Surprise(%)' in earnings_display.columns:
-                        surprise_data = earnings_display['Surprise(%)'].dropna()
-                        if len(surprise_data) > 0:
-                            fig = go.Figure()
-                            colors = [THEME['bullish'] if x >= 0 else THEME['bearish'] for x in surprise_data.values]
-                            fig.add_trace(go.Bar(x=surprise_data.index, y=surprise_data.values, marker_color=colors))
-                            fig.update_layout(
-                                title="Earnings Surprise History (%)",
-                                height=300, plot_bgcolor=THEME['bg_primary'], paper_bgcolor=THEME['bg_primary'],
-                                font=dict(color=THEME['text_primary'])
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.dataframe(earnings_display, use_container_width=True)
-            else:
-                st.info("No earnings data available")
+                # Stock Analysis
+                st.markdown(f"""
+                <a href='https://stockanalysis.com/stocks/{ticker.lower()}/financials/' target='_blank' style='text-decoration: none;'>
+                    <div style='background: {THEME["card_bg"]}; border: 1px solid {THEME["border"]}; border-radius: 12px; padding: 20px; margin-bottom: 16px; transition: all 0.3s ease;' onmouseover="this.style.borderColor='{THEME["accent_primary"]}'" onmouseout="this.style.borderColor='{THEME["border"]}'">
+                        <div style='display: flex; align-items: center; gap: 12px;'>
+                            <div style='font-size: 28px;'>🔍</div>
+                            <div>
+                                <div style='color: {THEME["text_primary"]}; font-weight: 700; font-size: 15px;'>Stock Analysis</div>
+                                <div style='color: {THEME["text_muted"]}; font-size: 12px;'>Detailed Financial Data</div>
+                            </div>
+                        </div>
+                    </div>
+                </a>
+                """, unsafe_allow_html=True)
+
+            # Quick Financial Summary from loaded data
+            st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+            st.markdown("<div class='subsection-header'>Quick Financial Summary</div>", unsafe_allow_html=True)
+
+            fund = data['fundamentals']
+            sum_col1, sum_col2, sum_col3, sum_col4 = st.columns(4)
+
+            with sum_col1:
+                st.markdown(f"""
+                <div style='background: {THEME["card_bg"]}; border: 1px solid {THEME["border"]}; border-radius: 8px; padding: 16px; text-align: center;'>
+                    <div style='color: {THEME["text_muted"]}; font-size: 10px; text-transform: uppercase;'>Revenue</div>
+                    <div style='color: {THEME["text_primary"]}; font-size: 18px; font-weight: 700;'>{format_large_number(fund['revenue'])}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with sum_col2:
+                margin_color = THEME['green'] if fund['profit_margin'] > 10 else THEME['text_primary']
+                st.markdown(f"""
+                <div style='background: {THEME["card_bg"]}; border: 1px solid {THEME["border"]}; border-radius: 8px; padding: 16px; text-align: center;'>
+                    <div style='color: {THEME["text_muted"]}; font-size: 10px; text-transform: uppercase;'>Profit Margin</div>
+                    <div style='color: {margin_color}; font-size: 18px; font-weight: 700;'>{fund['profit_margin']:.1f}%</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with sum_col3:
+                st.markdown(f"""
+                <div style='background: {THEME["card_bg"]}; border: 1px solid {THEME["border"]}; border-radius: 8px; padding: 16px; text-align: center;'>
+                    <div style='color: {THEME["text_muted"]}; font-size: 10px; text-transform: uppercase;'>Free Cash Flow</div>
+                    <div style='color: {THEME["text_primary"]}; font-size: 18px; font-weight: 700;'>{format_large_number(fund['free_cash_flow'])}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with sum_col4:
+                de_color = THEME['green'] if fund['debt_to_equity'] < 0.5 else THEME['red'] if fund['debt_to_equity'] > 1.5 else THEME['text_primary']
+                st.markdown(f"""
+                <div style='background: {THEME["card_bg"]}; border: 1px solid {THEME["border"]}; border-radius: 8px; padding: 16px; text-align: center;'>
+                    <div style='color: {THEME["text_muted"]}; font-size: 10px; text-transform: uppercase;'>Debt/Equity</div>
+                    <div style='color: {de_color}; font-size: 18px; font-weight: 700;'>{fund['debt_to_equity']:.2f}x</div>
+                </div>
+                """, unsafe_allow_html=True)
 
         # FUNDAMENTALS TAB
         with analysis_tabs[3]:
@@ -3091,78 +3210,77 @@ with main_tabs[2]:
     forensic_ticker = st.text_input("Enter ticker for deep forensic scan", placeholder="AAPL", key="forensic_ticker").upper()
 
     if st.button("🔬 RUN FORENSIC SCAN", use_container_width=True) and forensic_ticker:
-        with st.spinner(f"Running forensic analysis on {forensic_ticker}..."):
-            f_info = DataEngine.get_info(forensic_ticker)
-            f_financials = DataEngine.get_financials(forensic_ticker)
-            f_hist = DataEngine.get_history(forensic_ticker, period='2y')
+        f_info = DataEngine.get_info(forensic_ticker)
+        f_financials = DataEngine.get_financials(forensic_ticker)
+        f_hist = DataEngine.get_history(forensic_ticker, period='2y')
 
-            if f_info and f_financials:
-                # Distortion analysis
-                f_distortion = ForensicLab.analyze_distortion(forensic_ticker, f_info, f_financials)
-                f_quality = ForensicLab.calculate_quality_of_earnings(forensic_ticker, f_financials)
+        if f_info and f_financials:
+            # Distortion analysis
+            f_distortion = ForensicLab.analyze_distortion(forensic_ticker, f_info, f_financials)
+            f_quality = ForensicLab.calculate_quality_of_earnings(forensic_ticker, f_financials)
 
-                # Display results
-                st.markdown("---")
-                st.markdown(f"<div style='font-size: 24px; font-weight: 800; color: {THEME['text_primary']};'>{f_info.get('longName', forensic_ticker)}</div>", unsafe_allow_html=True)
+            # Display results
+            st.markdown("---")
+            st.markdown(f"<div style='font-size: 24px; font-weight: 800; color: {THEME['text_primary']};'>{f_info.get('longName', forensic_ticker)}</div>", unsafe_allow_html=True)
 
-                # Distortion verdict
-                if f_distortion.get('has_distortion'):
-                    st.markdown(f"""
-                    <div class='opportunity-card'>
-                        <div style='font-size: 18px; font-weight: 700; color: {THEME["opportunity"]};'>🎯 DISTORTED VALUE OPPORTUNITY</div>
-                        <div style='font-size: 14px; color: {THEME["text_secondary"]}; margin-top: 12px;'>
-                            Real earnings power is {f_distortion.get('pe_gap', 0):.1f}% higher than GAAP suggests.
-                            This stock may be undervalued due to accounting noise.
-                        </div>
+            # Distortion verdict
+            if f_distortion.get('has_distortion'):
+                st.markdown(f"""
+                <div class='opportunity-card'>
+                    <div style='font-size: 18px; font-weight: 700; color: {THEME["opportunity"]};'>🎯 DISTORTED VALUE OPPORTUNITY</div>
+                    <div style='font-size: 14px; color: {THEME["text_secondary"]}; margin-top: 12px;'>
+                        Real earnings power is {f_distortion.get('pe_gap', 0):.1f}% higher than GAAP suggests.
+                        This stock may be undervalued due to accounting noise.
                     </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    st.markdown(f"""
-                    <div class='metric-card'>
-                        <div style='font-size: 16px; font-weight: 600; color: {THEME["text_primary"]};'>📊 No Significant Distortion Detected</div>
-                        <div style='font-size: 13px; color: {THEME["text_secondary"]}; margin-top: 8px;'>
-                            GAAP earnings appear to reflect true earnings power.
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                # Metrics
-                f_cols = st.columns(4)
-                f_cols[0].metric("GAAP P/E", f"{f_distortion.get('gaap_pe', 0):.1f}x" if f_distortion.get('gaap_pe') else "N/A")
-                f_cols[1].metric("Real P/E", f"{f_distortion.get('real_pe', 0):.1f}x" if f_distortion.get('real_pe') else "N/A")
-                f_cols[2].metric("P/E Gap", f"{f_distortion.get('pe_gap', 0):.1f}%")
-                f_cols[3].metric("Distortion Score", f"{f_distortion.get('distortion_score', 0):.0f}")
-
-                # Adjustments breakdown
-                if f_distortion.get('adjustments'):
-                    st.markdown("<div class='subsection-header'>One-Time Items Detected</div>", unsafe_allow_html=True)
-                    for adj_type, adj_value in f_distortion['adjustments']:
-                        st.markdown(f"""
-                        <div class='metric-card' style='display: flex; justify-content: space-between; padding: 12px;'>
-                            <span style='color: {THEME["text_secondary"]};'>{adj_type}</span>
-                            <span style='font-weight: 700; color: {THEME["opportunity"]};'>{format_large_number(adj_value)}</span>
-                        </div>
-                        """, unsafe_allow_html=True)
-
-                # Quality analysis
-                st.markdown("---")
-                st.markdown("<div class='subsection-header'>Earnings Quality Analysis</div>", unsafe_allow_html=True)
-
-                q_cols = st.columns(3)
-                q_cols[0].metric("Quality Score", f"{f_quality.get('quality_score', 50):.0f}/100")
-                cash_conv = f_quality.get('cash_conversion')
-                q_cols[1].metric("Cash Conversion", f"{cash_conv:.1f}%" if cash_conv else "N/A",
-                                delta="Strong" if cash_conv and cash_conv > 100 else "Weak" if cash_conv and cash_conv < 80 else None)
-                accrual = f_quality.get('accrual_ratio')
-                q_cols[2].metric("Accrual Ratio", f"{accrual:.1f}%" if accrual else "N/A")
-
-                if f_quality.get('flags'):
-                    st.markdown("<div class='danger-alert'>", unsafe_allow_html=True)
-                    for flag in f_quality['flags']:
-                        st.markdown(f"⚠️ {flag}")
-                    st.markdown("</div>", unsafe_allow_html=True)
+                </div>
+                """, unsafe_allow_html=True)
             else:
-                st.error(f"Could not find data for {forensic_ticker}")
+                st.markdown(f"""
+                <div class='metric-card'>
+                    <div style='font-size: 16px; font-weight: 600; color: {THEME["text_primary"]};'>📊 No Significant Distortion Detected</div>
+                    <div style='font-size: 13px; color: {THEME["text_secondary"]}; margin-top: 8px;'>
+                        GAAP earnings appear to reflect true earnings power.
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            # Metrics
+            f_cols = st.columns(4)
+            f_cols[0].metric("GAAP P/E", f"{f_distortion.get('gaap_pe', 0):.1f}x" if f_distortion.get('gaap_pe') else "N/A")
+            f_cols[1].metric("Real P/E", f"{f_distortion.get('real_pe', 0):.1f}x" if f_distortion.get('real_pe') else "N/A")
+            f_cols[2].metric("P/E Gap", f"{f_distortion.get('pe_gap', 0):.1f}%")
+            f_cols[3].metric("Distortion Score", f"{f_distortion.get('distortion_score', 0):.0f}")
+
+            # Adjustments breakdown
+            if f_distortion.get('adjustments'):
+                st.markdown("<div class='subsection-header'>One-Time Items Detected</div>", unsafe_allow_html=True)
+                for adj_type, adj_value in f_distortion['adjustments']:
+                    st.markdown(f"""
+                    <div class='metric-card' style='display: flex; justify-content: space-between; padding: 12px;'>
+                        <span style='color: {THEME["text_secondary"]};'>{adj_type}</span>
+                        <span style='font-weight: 700; color: {THEME["opportunity"]};'>{format_large_number(adj_value)}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            # Quality analysis
+            st.markdown("---")
+            st.markdown("<div class='subsection-header'>Earnings Quality Analysis</div>", unsafe_allow_html=True)
+
+            q_cols = st.columns(3)
+            q_cols[0].metric("Quality Score", f"{f_quality.get('quality_score', 50):.0f}/100")
+            cash_conv = f_quality.get('cash_conversion')
+            q_cols[1].metric("Cash Conversion", f"{cash_conv:.1f}%" if cash_conv else "N/A",
+                            delta="Strong" if cash_conv and cash_conv > 100 else "Weak" if cash_conv and cash_conv < 80 else None)
+            accrual = f_quality.get('accrual_ratio')
+            q_cols[2].metric("Accrual Ratio", f"{accrual:.1f}%" if accrual else "N/A")
+
+            if f_quality.get('flags'):
+                st.markdown("<div class='danger-alert'>", unsafe_allow_html=True)
+                for flag in f_quality['flags']:
+                    st.markdown(f"⚠️ {flag}")
+                st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            st.error(f"Could not find data for {forensic_ticker}")
 
 # ============================================================================
 # TAB 3: RETAIL EDGE ENGINES
@@ -3181,157 +3299,156 @@ with main_tabs[3]:
     edge_ticker = st.text_input("Enter ticker for edge analysis", placeholder="GME", key="edge_ticker").upper()
 
     if st.button("⚡ RUN EDGE ANALYSIS", use_container_width=True) and edge_ticker:
-        with st.spinner(f"Running retail edge analysis on {edge_ticker}..."):
-            e_info = DataEngine.get_info(edge_ticker)
-            e_hist = DataEngine.get_history(edge_ticker, period='1y')
-            e_inst = DataEngine.get_institutional_holders(edge_ticker)
-            e_insider = DataEngine.get_insider_transactions(edge_ticker)
-            e_options = DataEngine.get_options_chain(edge_ticker)
+        e_info = DataEngine.get_info(edge_ticker)
+        e_hist = DataEngine.get_history(edge_ticker, period='1y')
+        e_inst = DataEngine.get_institutional_holders(edge_ticker)
+        e_insider = DataEngine.get_insider_transactions(edge_ticker)
+        e_options = DataEngine.get_options_chain(edge_ticker)
 
-            if e_info and not e_hist.empty:
-                current_price = e_info.get('currentPrice', e_hist['Close'].iloc[-1])
+        if e_info and not e_hist.empty:
+            current_price = e_info.get('currentPrice', e_hist['Close'].iloc[-1])
 
-                st.markdown(f"<div style='font-size: 24px; font-weight: 800; margin: 20px 0;'>{e_info.get('longName', edge_ticker)} - ${current_price:.2f}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size: 24px; font-weight: 800; margin: 20px 0;'>{e_info.get('longName', edge_ticker)} - ${current_price:.2f}</div>", unsafe_allow_html=True)
 
-                # Create subtabs for each engine
-                edge_tabs = st.tabs(["🎒 BAGHOLDER DETECTOR", "🐋 WHALE WATCHER", "🚀 GAMMA RADAR", "📊 REALITY CHECK"])
+            # Create subtabs for each engine
+            edge_tabs = st.tabs(["🎒 BAGHOLDER DETECTOR", "🐋 WHALE WATCHER", "🚀 GAMMA RADAR", "📊 REALITY CHECK"])
 
-                # BAGHOLDER DETECTOR
-                with edge_tabs[0]:
-                    st.markdown("<div class='subsection-header'>Volume Profile Analysis</div>", unsafe_allow_html=True)
+            # BAGHOLDER DETECTOR
+            with edge_tabs[0]:
+                st.markdown("<div class='subsection-header'>Volume Profile Analysis</div>", unsafe_allow_html=True)
 
-                    bagholder = RetailEdgeEngine.bagholder_detector(e_hist)
+                bagholder = RetailEdgeEngine.bagholder_detector(e_hist)
 
-                    risk_color = THEME['bearish'] if bagholder['current_risk'] in ['CRITICAL', 'HIGH'] else THEME['warning'] if bagholder['current_risk'] == 'MODERATE' else THEME['bullish']
+                risk_color = THEME['bearish'] if bagholder['current_risk'] in ['CRITICAL', 'HIGH'] else THEME['warning'] if bagholder['current_risk'] == 'MODERATE' else THEME['bullish']
 
+                st.markdown(f"""
+                <div class='metric-card' style='text-align: center; padding: 24px;'>
+                    <div style='font-size: 12px; color: {THEME["text_muted"]}; text-transform: uppercase;'>Overhead Supply Risk</div>
+                    <div style='font-size: 36px; font-weight: 800; color: {risk_color}; margin: 12px 0;'>{bagholder['current_risk']}</div>
+                    <div style='font-size: 14px; color: {THEME["text_secondary"]};'>Risk Score: {bagholder['risk_score']}/100</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if bagholder['overhead_supply_zones']:
+                    st.markdown("<div class='danger-alert'>", unsafe_allow_html=True)
+                    st.markdown(f"**{len(bagholder['overhead_supply_zones'])} overhead supply zones detected!**")
+                    st.markdown("Heavy volume was traded at these price levels - expect resistance:")
+                    for zone in bagholder['overhead_supply_zones'][:3]:
+                        st.markdown(f"${zone['price_low']:.2f} - ${zone['price_high']:.2f} (strength: {zone['strength']:.1f}x)")
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                if bagholder['support_zones']:
+                    st.markdown("<div class='whale-alert'>", unsafe_allow_html=True)
+                    st.markdown(f"**{len(bagholder['support_zones'])} support zones detected:**")
+                    for zone in bagholder['support_zones'][:3]:
+                        st.markdown(f"${zone['price_low']:.2f} - ${zone['price_high']:.2f}")
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+            # WHALE WATCHER
+            with edge_tabs[1]:
+                st.markdown("<div class='subsection-header'>Institutional & Insider Activity</div>", unsafe_allow_html=True)
+
+                whale = RetailEdgeEngine.whale_watcher(edge_ticker, e_info, e_inst, e_insider)
+
+                whale_cols = st.columns(3)
+                whale_cols[0].metric("Whale Score", f"{whale['whale_score']}/100")
+                whale_cols[1].metric("Insider Signal", whale['insider_signal'])
+                whale_cols[2].metric("Combined Signal", whale['combined_signal'])
+
+                if whale['combined_signal'] == 'WHALE ACCUMULATION':
                     st.markdown(f"""
-                    <div class='metric-card' style='text-align: center; padding: 24px;'>
-                        <div style='font-size: 12px; color: {THEME["text_muted"]}; text-transform: uppercase;'>Overhead Supply Risk</div>
-                        <div style='font-size: 36px; font-weight: 800; color: {risk_color}; margin: 12px 0;'>{bagholder['current_risk']}</div>
-                        <div style='font-size: 14px; color: {THEME["text_secondary"]};'>Risk Score: {bagholder['risk_score']}/100</div>
+                    <div class='opportunity-card'>
+                        <div style='font-size: 16px; font-weight: 700; color: {THEME["opportunity"]};'>WHALE ACCUMULATION DETECTED</div>
+                        <div style='color: {THEME["text_secondary"]}; margin-top: 8px;'>
+                            Smart money is buying. Insider buys: {whale['recent_insider_buys']}, Sells: {whale['recent_insider_sells']}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                elif whale['combined_signal'] == 'WHALE DISTRIBUTION':
+                    st.markdown(f"""
+                    <div class='danger-alert'>
+                        <div style='font-size: 16px; font-weight: 700; color: {THEME["bearish"]};'>WHALE DISTRIBUTION DETECTED</div>
+                        <div style='color: {THEME["text_secondary"]}; margin-top: 8px;'>
+                            Insiders are selling. Be cautious.
+                        </div>
                     </div>
                     """, unsafe_allow_html=True)
 
-                    if bagholder['overhead_supply_zones']:
-                        st.markdown("<div class='danger-alert'>", unsafe_allow_html=True)
-                        st.markdown(f"**⚠️ {len(bagholder['overhead_supply_zones'])} overhead supply zones detected!**")
-                        st.markdown("Heavy volume was traded at these price levels - expect resistance:")
-                        for zone in bagholder['overhead_supply_zones'][:3]:
-                            st.markdown(f"• ${zone['price_low']:.2f} - ${zone['price_high']:.2f} (strength: {zone['strength']:.1f}x)")
-                        st.markdown("</div>", unsafe_allow_html=True)
-
-                    if bagholder['support_zones']:
-                        st.markdown("<div class='whale-alert'>", unsafe_allow_html=True)
-                        st.markdown(f"**🛡️ {len(bagholder['support_zones'])} support zones detected:**")
-                        for zone in bagholder['support_zones'][:3]:
-                            st.markdown(f"• ${zone['price_low']:.2f} - ${zone['price_high']:.2f}")
-                        st.markdown("</div>", unsafe_allow_html=True)
-
-                # WHALE WATCHER
-                with edge_tabs[1]:
-                    st.markdown("<div class='subsection-header'>Institutional & Insider Activity</div>", unsafe_allow_html=True)
-
-                    whale = RetailEdgeEngine.whale_watcher(edge_ticker, e_info, e_inst, e_insider)
-
-                    whale_cols = st.columns(3)
-                    whale_cols[0].metric("Whale Score", f"{whale['whale_score']}/100")
-                    whale_cols[1].metric("Insider Signal", whale['insider_signal'])
-                    whale_cols[2].metric("Combined Signal", whale['combined_signal'])
-
-                    if whale['combined_signal'] == 'WHALE ACCUMULATION':
+                # Notable transactions
+                if whale['notable_transactions']:
+                    st.markdown("<div class='subsection-header'>Recent Insider Activity</div>", unsafe_allow_html=True)
+                    for tx in whale['notable_transactions']:
                         st.markdown(f"""
-                        <div class='opportunity-card'>
-                            <div style='font-size: 16px; font-weight: 700; color: {THEME["opportunity"]};'>🐋 WHALE ACCUMULATION DETECTED</div>
-                            <div style='color: {THEME["text_secondary"]}; margin-top: 8px;'>
-                                Smart money is buying. Insider buys: {whale['recent_insider_buys']}, Sells: {whale['recent_insider_sells']}
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    elif whale['combined_signal'] == 'WHALE DISTRIBUTION':
-                        st.markdown(f"""
-                        <div class='danger-alert'>
-                            <div style='font-size: 16px; font-weight: 700; color: {THEME["bearish"]};'>⚠️ WHALE DISTRIBUTION DETECTED</div>
-                            <div style='color: {THEME["text_secondary"]}; margin-top: 8px;'>
-                                Insiders are selling. Be cautious.
-                            </div>
+                        <div class='metric-card' style='padding: 12px; margin: 4px 0;'>
+                            <div style='font-weight: 600;'>{tx.get('insider', 'Unknown')}</div>
+                            <div style='font-size: 12px; color: {THEME["text_secondary"]};'>{tx.get('action', 'Unknown')}</div>
                         </div>
                         """, unsafe_allow_html=True)
 
-                    # Notable transactions
-                    if whale['notable_transactions']:
-                        st.markdown("<div class='subsection-header'>Recent Insider Activity</div>", unsafe_allow_html=True)
-                        for tx in whale['notable_transactions']:
-                            st.markdown(f"""
-                            <div class='metric-card' style='padding: 12px; margin: 4px 0;'>
-                                <div style='font-weight: 600;'>{tx.get('insider', 'Unknown')}</div>
-                                <div style='font-size: 12px; color: {THEME["text_secondary"]};'>{tx.get('action', 'Unknown')}</div>
-                            </div>
-                            """, unsafe_allow_html=True)
+            # GAMMA SQUEEZE RADAR
+            with edge_tabs[2]:
+                st.markdown("<div class='subsection-header'>Options Flow Analysis</div>", unsafe_allow_html=True)
 
-                # GAMMA SQUEEZE RADAR
-                with edge_tabs[2]:
-                    st.markdown("<div class='subsection-header'>Options Flow Analysis</div>", unsafe_allow_html=True)
+                gamma = RetailEdgeEngine.gamma_squeeze_radar(e_options, current_price)
 
-                    gamma = RetailEdgeEngine.gamma_squeeze_radar(e_options, current_price)
+                squeeze_color = THEME['opportunity'] if gamma['squeeze_potential'] == 'HIGH' else THEME['warning'] if gamma['squeeze_potential'] == 'MODERATE' else THEME['text_secondary']
 
-                    squeeze_color = THEME['opportunity'] if gamma['squeeze_potential'] == 'HIGH' else THEME['warning'] if gamma['squeeze_potential'] == 'MODERATE' else THEME['text_secondary']
+                st.markdown(f"""
+                <div class='metric-card' style='text-align: center; padding: 24px;'>
+                    <div style='font-size: 12px; color: {THEME["text_muted"]}; text-transform: uppercase;'>Gamma Squeeze Potential</div>
+                    <div style='font-size: 36px; font-weight: 800; color: {squeeze_color}; margin: 12px 0;'>{gamma['squeeze_potential']}</div>
+                    <div style='font-size: 14px; color: {THEME["text_secondary"]};'>Score: {gamma['squeeze_score']}/100</div>
+                </div>
+                """, unsafe_allow_html=True)
 
+                g_cols = st.columns(3)
+                g_cols[0].metric("Call/Put Ratio", f"{gamma['call_put_ratio']:.2f}" if gamma['call_put_ratio'] else "N/A")
+                g_cols[1].metric("Max Pain", f"${gamma['max_pain']:.2f}" if gamma['max_pain'] else "N/A")
+                g_cols[2].metric("Current Price", f"${current_price:.2f}")
+
+                if gamma['hot_strikes']:
+                    st.markdown("<div class='subsection-header'>Hot Strikes (High OI Near Money)</div>", unsafe_allow_html=True)
+                    for strike in gamma['hot_strikes']:
+                        iv_pct = strike.get('implied_vol', 0) * 100
+                        st.markdown(f"""
+                        <div class='metric-card' style='display: flex; justify-content: space-between; padding: 10px; margin: 4px 0;'>
+                            <span style='font-weight: 700;'>${strike['strike']:.0f} {strike['type']}</span>
+                            <span style='color: {THEME["text_secondary"]};'>OI: {strike['open_interest']:,.0f} | IV: {iv_pct:.0f}%</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+            # REALITY CHECK
+            with edge_tabs[3]:
+                st.markdown("<div class='subsection-header'>Correlation Analysis</div>", unsafe_allow_html=True)
+
+                reality = RetailEdgeEngine.reality_check(edge_ticker)
+
+                alpha_color = THEME['bullish'] if reality['alpha_potential'] == 'HIGH' else THEME['warning'] if reality['alpha_potential'] == 'MODERATE' else THEME['text_secondary']
+
+                st.markdown(f"""
+                <div class='metric-card' style='text-align: center; padding: 24px;'>
+                    <div style='font-size: 12px; color: {THEME["text_muted"]}; text-transform: uppercase;'>Alpha Potential</div>
+                    <div style='font-size: 28px; font-weight: 800; color: {alpha_color}; margin: 12px 0;'>{reality['alpha_potential']}</div>
+                    <div style='font-size: 14px; color: {THEME["text_secondary"]};'>Idiosyncratic Score: {reality['idiosyncratic_score']:.0f}/100</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                r_cols = st.columns(3)
+                r_cols[0].metric("SPY Correlation", f"{reality['spy_correlation']:.2f}" if reality['spy_correlation'] else "N/A")
+                r_cols[1].metric("BTC Correlation", f"{reality['btc_correlation']:.2f}" if reality['btc_correlation'] else "N/A")
+                r_cols[2].metric("Beta", f"{reality['beta']:.2f}" if reality['beta'] else "N/A")
+
+                if reality['spy_correlation'] and abs(reality['spy_correlation']) < 0.5:
                     st.markdown(f"""
-                    <div class='metric-card' style='text-align: center; padding: 24px;'>
-                        <div style='font-size: 12px; color: {THEME["text_muted"]}; text-transform: uppercase;'>Gamma Squeeze Potential</div>
-                        <div style='font-size: 36px; font-weight: 800; color: {squeeze_color}; margin: 12px 0;'>{gamma['squeeze_potential']}</div>
-                        <div style='font-size: 14px; color: {THEME["text_secondary"]};'>Score: {gamma['squeeze_score']}/100</div>
+                    <div class='opportunity-card'>
+                        <div style='font-weight: 700; color: {THEME["opportunity"]};'>LOW MARKET CORRELATION</div>
+                        <div style='color: {THEME["text_secondary"]}; margin-top: 8px;'>
+                            This stock moves independently from the market - potential alpha generator.
+                        </div>
                     </div>
                     """, unsafe_allow_html=True)
-
-                    g_cols = st.columns(3)
-                    g_cols[0].metric("Call/Put Ratio", f"{gamma['call_put_ratio']:.2f}" if gamma['call_put_ratio'] else "N/A")
-                    g_cols[1].metric("Max Pain", f"${gamma['max_pain']:.2f}" if gamma['max_pain'] else "N/A")
-                    g_cols[2].metric("Current Price", f"${current_price:.2f}")
-
-                    if gamma['hot_strikes']:
-                        st.markdown("<div class='subsection-header'>Hot Strikes (High OI Near Money)</div>", unsafe_allow_html=True)
-                        for strike in gamma['hot_strikes']:
-                            iv_pct = strike.get('implied_vol', 0) * 100
-                            st.markdown(f"""
-                            <div class='metric-card' style='display: flex; justify-content: space-between; padding: 10px; margin: 4px 0;'>
-                                <span style='font-weight: 700;'>${strike['strike']:.0f} {strike['type']}</span>
-                                <span style='color: {THEME["text_secondary"]};'>OI: {strike['open_interest']:,.0f} | IV: {iv_pct:.0f}%</span>
-                            </div>
-                            """, unsafe_allow_html=True)
-
-                # REALITY CHECK
-                with edge_tabs[3]:
-                    st.markdown("<div class='subsection-header'>Correlation Analysis</div>", unsafe_allow_html=True)
-
-                    reality = RetailEdgeEngine.reality_check(edge_ticker)
-
-                    alpha_color = THEME['bullish'] if reality['alpha_potential'] == 'HIGH' else THEME['warning'] if reality['alpha_potential'] == 'MODERATE' else THEME['text_secondary']
-
-                    st.markdown(f"""
-                    <div class='metric-card' style='text-align: center; padding: 24px;'>
-                        <div style='font-size: 12px; color: {THEME["text_muted"]}; text-transform: uppercase;'>Alpha Potential</div>
-                        <div style='font-size: 28px; font-weight: 800; color: {alpha_color}; margin: 12px 0;'>{reality['alpha_potential']}</div>
-                        <div style='font-size: 14px; color: {THEME["text_secondary"]};'>Idiosyncratic Score: {reality['idiosyncratic_score']:.0f}/100</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    r_cols = st.columns(3)
-                    r_cols[0].metric("SPY Correlation", f"{reality['spy_correlation']:.2f}" if reality['spy_correlation'] else "N/A")
-                    r_cols[1].metric("BTC Correlation", f"{reality['btc_correlation']:.2f}" if reality['btc_correlation'] else "N/A")
-                    r_cols[2].metric("Beta", f"{reality['beta']:.2f}" if reality['beta'] else "N/A")
-
-                    if reality['spy_correlation'] and abs(reality['spy_correlation']) < 0.5:
-                        st.markdown(f"""
-                        <div class='opportunity-card'>
-                            <div style='font-weight: 700; color: {THEME["opportunity"]};'>🎯 LOW MARKET CORRELATION</div>
-                            <div style='color: {THEME["text_secondary"]}; margin-top: 8px;'>
-                                This stock moves independently from the market - potential alpha generator.
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-            else:
-                st.error(f"Could not load data for {edge_ticker}")
+        else:
+            st.error(f"Could not load data for {edge_ticker}")
 
 # ============================================================================
 # TAB 5: MULTI-ASSET COMPARISON
@@ -3348,83 +3465,81 @@ with main_tabs[4]:
     if st.button("📊 COMPARE", use_container_width=True):
         tickers = [t.strip().upper() for t in multi_tickers.split(",") if t.strip()]
         period_map = {'1M': '1mo', '3M': '3mo', '6M': '6mo', '1Y': '1y', '2Y': '2y', '5Y': '5y'}
+        try:
+            data_df = yf.download(tickers, period=period_map[multi_period], progress=False)['Close']
+            if isinstance(data_df, pd.Series):
+                data_df = data_df.to_frame(name=tickers[0])
 
-        with st.spinner("Loading comparison data..."):
-            try:
-                data_df = yf.download(tickers, period=period_map[multi_period], progress=False)['Close']
-                if isinstance(data_df, pd.Series):
-                    data_df = data_df.to_frame(name=tickers[0])
+            # Drop columns with all NaN and forward fill missing values
+            data_df = data_df.dropna(axis=1, how='all')
+            data_df = data_df.ffill().bfill()
 
-                # Drop columns with all NaN and forward fill missing values
-                data_df = data_df.dropna(axis=1, how='all')
-                data_df = data_df.ffill().bfill()
+            if data_df.empty:
+                st.error("No data available for the selected tickers")
+            else:
+                # Normalize to base 100
+                first_valid = data_df.iloc[0]
+                normalized = (data_df / first_valid) * 100
 
-                if data_df.empty:
-                    st.error("No data available for the selected tickers")
-                else:
-                    # Normalize to base 100
-                    first_valid = data_df.iloc[0]
-                    normalized = (data_df / first_valid) * 100
+                # Chart with professional colors
+                fig = go.Figure()
+                chart_colors = ['#3b82f6', '#22c55e', '#f59e0b', '#ec4899', '#8b5cf6', '#06b6d4', '#ef4444', '#84cc16']
 
-                    # Chart with professional colors
-                    fig = go.Figure()
-                    chart_colors = ['#3b82f6', '#22c55e', '#f59e0b', '#ec4899', '#8b5cf6', '#06b6d4', '#ef4444', '#84cc16']
+                for idx, col in enumerate(normalized.columns):
+                    color = chart_colors[idx % len(chart_colors)]
+                    fig.add_trace(go.Scatter(
+                        x=normalized.index,
+                        y=normalized[col],
+                        mode='lines',
+                        name=str(col),
+                        line=dict(color=color, width=2.5),
+                        hovertemplate=f'<b>{col}</b><br>%{{x|%b %d, %Y}}<br>Return: %{{y:.1f}}%<extra></extra>'
+                    ))
 
-                    for idx, col in enumerate(normalized.columns):
-                        color = chart_colors[idx % len(chart_colors)]
-                        fig.add_trace(go.Scatter(
-                            x=normalized.index,
-                            y=normalized[col],
-                            mode='lines',
-                            name=str(col),
-                            line=dict(color=color, width=2.5),
-                            hovertemplate=f'<b>{col}</b><br>%{{x|%b %d, %Y}}<br>Return: %{{y:.1f}}%<extra></extra>'
-                        ))
+                fig.update_layout(
+                    height=500,
+                    plot_bgcolor=THEME['bg_primary'],
+                    paper_bgcolor=THEME['bg_primary'],
+                    font=dict(color=THEME['text_primary'], family='Inter'),
+                    hovermode='x unified',
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+                    margin=dict(l=60, r=20, t=40, b=40),
+                    yaxis_title='Normalized Performance (Base = 100)',
+                )
+                fig.update_xaxes(showgrid=True, gridcolor=THEME['chart_grid'], gridwidth=1)
+                fig.update_yaxes(showgrid=True, gridcolor=THEME['chart_grid'], gridwidth=1)
 
-                    fig.update_layout(
-                        height=500,
-                        plot_bgcolor=THEME['bg_primary'],
-                        paper_bgcolor=THEME['bg_primary'],
-                        font=dict(color=THEME['text_primary'], family='Inter'),
-                        hovermode='x unified',
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-                        margin=dict(l=60, r=20, t=40, b=40),
-                        yaxis_title='Normalized Performance (Base = 100)',
-                    )
-                    fig.update_xaxes(showgrid=True, gridcolor=THEME['chart_grid'], gridwidth=1)
-                    fig.update_yaxes(showgrid=True, gridcolor=THEME['chart_grid'], gridwidth=1)
+                # Add 100 baseline
+                fig.add_hline(y=100, line_dash="dash", line_color=THEME['text_muted'], opacity=0.5)
 
-                    # Add 100 baseline
-                    fig.add_hline(y=100, line_dash="dash", line_color=THEME['text_muted'], opacity=0.5)
+                st.plotly_chart(fig, use_container_width=True)
 
-                    st.plotly_chart(fig, use_container_width=True)
+                # Performance table with proper NaN handling
+                perf_data = []
+                for col in data_df.columns:
+                    first_price = data_df[col].iloc[0]
+                    last_price = data_df[col].iloc[-1]
 
-                    # Performance table with proper NaN handling
-                    perf_data = []
-                    for col in data_df.columns:
-                        first_price = data_df[col].iloc[0]
-                        last_price = data_df[col].iloc[-1]
+                    if pd.notna(first_price) and pd.notna(last_price) and first_price > 0:
+                        total_ret = ((last_price / first_price) - 1) * 100
+                        ret_str = f"{total_ret:+.2f}%"
+                        curr_str = f"${last_price:,.2f}"
+                    else:
+                        ret_str = "N/A"
+                        curr_str = "N/A"
 
-                        if pd.notna(first_price) and pd.notna(last_price) and first_price > 0:
-                            total_ret = ((last_price / first_price) - 1) * 100
-                            ret_str = f"{total_ret:+.2f}%"
-                            curr_str = f"${last_price:,.2f}"
-                        else:
-                            ret_str = "N/A"
-                            curr_str = "N/A"
+                    perf_data.append({
+                        'Asset': str(col),
+                        'Current Price': curr_str,
+                        'Period Return': ret_str
+                    })
 
-                        perf_data.append({
-                            'Asset': str(col),
-                            'Current Price': curr_str,
-                            'Period Return': ret_str
-                        })
+                # Sort by return
+                perf_df = pd.DataFrame(perf_data)
+                st.dataframe(perf_df, use_container_width=True, hide_index=True)
 
-                    # Sort by return
-                    perf_df = pd.DataFrame(perf_data)
-                    st.dataframe(perf_df, use_container_width=True, hide_index=True)
-
-            except Exception as e:
-                st.error(f"Error loading data: {str(e)}")
+        except Exception as e:
+            st.error(f"Error loading data: {str(e)}")
 
 # ============================================================================
 # TAB 6: MACRO DASHBOARD
