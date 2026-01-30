@@ -655,12 +655,11 @@ TIMEFRAMES = {
 # CLASS: DataEngine - Core data fetching and caching
 # ============================================================================
 class DataEngine:
-    """Centralized data fetching with robust error handling"""
+    """Centralized data fetching with robust error handling and fallback"""
 
     @staticmethod
-    @st.cache_data(ttl=300)
     def get_stock(ticker: str):
-        """Fetch stock object with caching"""
+        """Fetch stock object (not cached - Ticker objects are not serializable)"""
         try:
             stock = yf.Ticker(ticker)
             _ = stock.info  # Validate ticker
@@ -670,25 +669,100 @@ class DataEngine:
 
     @staticmethod
     @st.cache_data(ttl=300)
+    def _fallback_info(ticker: str) -> dict:
+        """Fallback: build a minimal info dict from yf.download + fast_info"""
+        info = {}
+        try:
+            stock = yf.Ticker(ticker)
+            fi = stock.fast_info
+            if fi is not None:
+                info['currentPrice'] = getattr(fi, 'last_price', None)
+                info['regularMarketPrice'] = getattr(fi, 'last_price', None)
+                info['marketCap'] = getattr(fi, 'market_cap', None)
+                info['fiftyDayAverage'] = getattr(fi, 'fifty_day_average', None)
+                info['twoHundredDayAverage'] = getattr(fi, 'two_hundred_day_average', None)
+                info['fiftyTwoWeekHigh'] = getattr(fi, 'year_high', None)
+                info['fiftyTwoWeekLow'] = getattr(fi, 'year_low', None)
+                info['sharesOutstanding'] = getattr(fi, 'shares', None)
+                info['previousClose'] = getattr(fi, 'previous_close', None)
+                prev = info.get('previousClose')
+                curr = info.get('currentPrice')
+                if prev and curr and prev > 0:
+                    info['regularMarketChangePercent'] = ((curr - prev) / prev) * 100
+        except:
+            pass
+        # Second fallback layer: yf.download for price
+        if not info.get('currentPrice'):
+            try:
+                dl = yf.download(ticker, period='5d', progress=False, threads=False)
+                if not dl.empty:
+                    last_close = dl['Close'].iloc[-1]
+                    # Handle MultiIndex from yf.download
+                    if hasattr(last_close, 'iloc'):
+                        last_close = last_close.iloc[0]
+                    info['currentPrice'] = float(last_close)
+                    info['regularMarketPrice'] = float(last_close)
+                    if len(dl) >= 2:
+                        prev_close = dl['Close'].iloc[-2]
+                        if hasattr(prev_close, 'iloc'):
+                            prev_close = prev_close.iloc[0]
+                        info['previousClose'] = float(prev_close)
+                        if prev_close > 0:
+                            info['regularMarketChangePercent'] = ((last_close - prev_close) / prev_close) * 100
+            except:
+                pass
+        # Use ticker as name if nothing else
+        if not info.get('longName'):
+            info['longName'] = ticker
+        return info
+
+    @staticmethod
+    @st.cache_data(ttl=300)
     def get_info(ticker: str) -> dict:
-        """Fetch stock info with error handling"""
+        """Fetch stock info with error handling and automatic fallback"""
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
-            return info if info else {}
+            if info and (info.get('currentPrice') or info.get('regularMarketPrice') or info.get('navPrice')):
+                return info
+            # info dict exists but has no price - merge with fallback
+            if info:
+                fallback = DataEngine._fallback_info(ticker)
+                merged = {**fallback, **{k: v for k, v in info.items() if v is not None}}
+                return merged
         except:
-            return {}
+            pass
+        # Primary failed entirely - use fallback
+        return DataEngine._fallback_info(ticker)
+
+    @staticmethod
+    @st.cache_data(ttl=300)
+    def _fallback_history(ticker: str, period: str = '1y', interval: str = '1d') -> pd.DataFrame:
+        """Fallback: fetch history via yf.download batch API"""
+        try:
+            df = yf.download(ticker, period=period, interval=interval, progress=False, threads=False)
+            if not df.empty:
+                # yf.download may return MultiIndex columns for single ticker
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                return df
+        except:
+            pass
+        return pd.DataFrame()
 
     @staticmethod
     @st.cache_data(ttl=300)
     def get_history(ticker: str, period: str = '1y', interval: str = '1d') -> pd.DataFrame:
-        """Fetch price history with caching"""
+        """Fetch price history with caching and automatic fallback"""
         try:
             stock = yf.Ticker(ticker)
             hist = stock.history(period=period, interval=interval)
-            return hist if len(hist) > 0 else pd.DataFrame()
+            if len(hist) > 0:
+                return hist
         except:
-            return pd.DataFrame()
+            pass
+        # Primary failed - use yf.download fallback
+        return DataEngine._fallback_history(ticker, period, interval)
 
     @staticmethod
     @st.cache_data(ttl=600)
@@ -775,36 +849,61 @@ class DataEngine:
     @staticmethod
     @st.cache_data(ttl=300)
     def get_news(ticker: str) -> list:
-        """Fetch and clean news data"""
+        """Fetch and clean news data - handles both old and new yfinance formats"""
         try:
             stock = yf.Ticker(ticker)
             raw_news = stock.news
+            if not raw_news:
+                return []
             clean_news = []
 
             for item in raw_news:
-                title = item.get('title', '').strip()
-                link = item.get('link', '').strip()
-
-                if not title or not link:
+                # New yfinance format: news items may have 'content' wrapper
+                content = item.get('content', item) if isinstance(item, dict) else item
+                if not isinstance(content, dict):
                     continue
 
+                title = (content.get('title') or item.get('title', '')).strip()
+                link = (content.get('canonicalUrl', {}).get('url', '') if isinstance(content.get('canonicalUrl'), dict)
+                        else content.get('link') or item.get('link', '')).strip()
+
+                if not title:
+                    continue
+                # If no link, still show the article (it's still useful info)
+                if not link:
+                    link = f"https://finance.yahoo.com/quote/{ticker}/news"
+
                 thumbnail = None
-                if 'thumbnail' in item and 'resolutions' in item['thumbnail']:
-                    resolutions = item['thumbnail']['resolutions']
+                # New format: content -> thumbnail -> resolutions
+                thumb_data = content.get('thumbnail') or item.get('thumbnail')
+                if isinstance(thumb_data, dict) and 'resolutions' in thumb_data:
+                    resolutions = thumb_data['resolutions']
                     if resolutions:
-                        # Get highest resolution
                         thumbnail = resolutions[-1].get('url', resolutions[0].get('url', ''))
 
-                published = item.get('providerPublishTime', 0)
+                # Handle multiple timestamp field names
+                published = (content.get('pubDate') or content.get('providerPublishTime')
+                            or item.get('providerPublishTime') or 0)
+                # pubDate can be a string in new format - convert to timestamp
+                if isinstance(published, str):
+                    try:
+                        published = int(datetime.fromisoformat(published.replace('Z', '+00:00')).timestamp())
+                    except (ValueError, TypeError):
+                        published = 0
+
+                publisher = (content.get('provider', {}).get('displayName', '') if isinstance(content.get('provider'), dict)
+                            else content.get('publisher') or item.get('publisher', 'Unknown'))
+                publisher = (publisher.strip() if publisher else '') or 'Financial News'
+
                 if published > 0:
                     clean_news.append({
                         'title': title,
-                        'publisher': item.get('publisher', 'Unknown').strip() or 'Financial News',
+                        'publisher': publisher,
                         'link': link,
                         'thumbnail': thumbnail,
                         'published': published,
-                        'type': item.get('type', 'STORY'),
-                        'related_tickers': item.get('relatedTickers', [])
+                        'type': content.get('type') or item.get('type', 'STORY'),
+                        'related_tickers': content.get('relatedTickers') or item.get('relatedTickers', [])
                     })
 
             return clean_news
@@ -2182,7 +2281,6 @@ class StockSimulator:
         return hist['Close'].iloc[0]
 
 
-@st.cache_data(ttl=300)
 @st.cache_data(ttl=120)
 def get_market_movers() -> dict:
     """Fetch top gainers, losers, and most active stocks - batch download for speed"""
@@ -2608,34 +2706,66 @@ with main_tabs[1]:
             weights = {'valuation': 0.25, 'quality': 0.25, 'growth': 0.20, 'momentum': 0.15, 'risk': 0.15}
 
         # Load data if needed (silent loading - no visible spinner)
-        if not st.session_state['analysis_data'] or st.session_state['analysis_data'].get('ticker') != ticker:
+        cached = st.session_state['analysis_data']
+        need_full_reload = not cached or cached.get('ticker') != ticker
+        need_score_update = cached and cached.get('ticker') == ticker and cached.get('strategy') != strategy
+
+        if need_full_reload:
             try:
                 info = DataEngine.get_info(ticker)
-                if not info or 'currentPrice' not in info:
-                    st.error(f"Could not find data for {ticker}")
-                    st.stop()
 
                 hist = DataEngine.get_history(ticker, period='2y')
-                if hist.empty:
-                    st.error("No historical data available")
+
+                # If both info and history are completely empty, we truly have nothing
+                if not info and hist.empty:
+                    st.warning(f"No data sources returned results for **{ticker}**. Check the ticker symbol and try again.")
+                    st.session_state['current_ticker'] = None
                     st.stop()
+
+                # Build price from best available source
+                price_val = (info.get('currentPrice') or info.get('regularMarketPrice')
+                             or info.get('navPrice'))
+                if not price_val and not hist.empty:
+                    price_val = float(hist['Close'].iloc[-1])
+                    info['currentPrice'] = price_val
+                    info['regularMarketPrice'] = price_val
+                    if len(hist) >= 2:
+                        prev = float(hist['Close'].iloc[-2])
+                        if prev > 0:
+                            info['regularMarketChangePercent'] = ((price_val - prev) / prev) * 100
+
+                # If we still have no price at all, show warning but don't kill the page
+                if not price_val:
+                    st.warning(f"Limited data available for **{ticker}** — some sections may be incomplete.")
+
+                # Use whatever history we have, even if short
+                if hist.empty:
+                    st.warning(f"Historical price data unavailable for **{ticker}** — chart and momentum analysis will be limited.")
 
                 fundamentals = get_fundamental_metrics(info)
                 news = DataEngine.get_news(ticker)
                 financials = DataEngine.get_financials(ticker)
-                scores, total_score, metrics = calculate_smart_score(info, hist, fundamentals, weights)
 
-                # Forensic analysis
+                # Score calculation needs at least some history
+                if not hist.empty:
+                    scores, total_score, metrics = calculate_smart_score(info, hist, fundamentals, weights)
+                else:
+                    scores = {'valuation': 50, 'quality': 50, 'growth': 50, 'momentum': 50, 'risk': 50}
+                    total_score = 50.0
+                    metrics = {}
+
+                # Forensic analysis (safe - returns default dict on failure)
                 distortion = ForensicLab.analyze_distortion(ticker, info, financials)
                 quality = ForensicLab.calculate_quality_of_earnings(ticker, financials)
 
-                # Retail edge data
+                # Retail edge data (safe - returns empty DataFrames on failure)
                 inst_holders = DataEngine.get_institutional_holders(ticker)
                 insider_tx = DataEngine.get_insider_transactions(ticker)
                 options_data = DataEngine.get_options_chain(ticker)
 
                 st.session_state['analysis_data'] = {
                     'ticker': ticker,
+                    'strategy': strategy,
                     'info': info,
                     'hist': hist,
                     'fundamentals': fundamentals,
@@ -2651,8 +2781,19 @@ with main_tabs[1]:
                     'options_data': options_data
                 }
             except Exception as e:
-                st.error(f"Error loading data: {str(e)}")
+                st.warning(f"Some data could not be loaded for **{ticker}**: {str(e)}")
+                st.session_state['current_ticker'] = None
                 st.stop()
+        elif need_score_update:
+            # Recalculate scores with new strategy weights without refetching data
+            cached_data = st.session_state['analysis_data']
+            scores, total_score, metrics = calculate_smart_score(
+                cached_data['info'], cached_data['hist'], cached_data['fundamentals'], weights
+            )
+            st.session_state['analysis_data']['scores'] = scores
+            st.session_state['analysis_data']['total_score'] = total_score
+            st.session_state['analysis_data']['metrics'] = metrics
+            st.session_state['analysis_data']['strategy'] = strategy
 
         data = st.session_state['analysis_data']
         info = data['info']
@@ -2670,8 +2811,8 @@ with main_tabs[1]:
             </div>
             """, unsafe_allow_html=True)
 
-            price = info.get('currentPrice', 0)
-            change_pct = info.get('regularMarketChangePercent', 0)
+            price = info.get('currentPrice') or info.get('regularMarketPrice') or 0
+            change_pct = info.get('regularMarketChangePercent') or 0
             price_color = THEME['bullish'] if change_pct >= 0 else THEME['bearish']
             st.markdown(f"""
             <div style='font-size: 42px; font-weight: 900; color: {price_color}; margin-top: 12px;'>
@@ -2835,12 +2976,14 @@ with main_tabs[1]:
 
                 # Key stats
                 stat_cols = st.columns(6)
-                stat_cols[0].metric("52W High", f"${info.get('fiftyTwoWeekHigh', 0):.2f}")
-                stat_cols[1].metric("52W Low", f"${info.get('fiftyTwoWeekLow', 0):.2f}")
-                stat_cols[2].metric("Avg Volume", f"{info.get('averageVolume', 0)/1e6:.2f}M")
-                stat_cols[3].metric("Beta", f"{info.get('beta', 0):.2f}")
+                stat_cols[0].metric("52W High", f"${(info.get('fiftyTwoWeekHigh') or 0):.2f}")
+                stat_cols[1].metric("52W Low", f"${(info.get('fiftyTwoWeekLow') or 0):.2f}")
+                stat_cols[2].metric("Avg Volume", f"{(info.get('averageVolume') or 0)/1e6:.2f}M")
+                stat_cols[3].metric("Beta", f"{(info.get('beta') or 0):.2f}")
                 stat_cols[4].metric("RSI (14)", f"{data['metrics'].get('rsi', 50):.0f}")
-                stat_cols[5].metric("Market Cap", format_large_number(info.get('marketCap', 0)))
+                stat_cols[5].metric("Market Cap", format_large_number(info.get('marketCap') or 0))
+            else:
+                st.info(f"Chart data not available for this timeframe. Try a different period.")
 
         # NEWS TAB
         with analysis_tabs[1]:
@@ -3214,7 +3357,11 @@ with main_tabs[2]:
         f_financials = DataEngine.get_financials(forensic_ticker)
         f_hist = DataEngine.get_history(forensic_ticker, period='2y')
 
-        if f_info and f_financials:
+        if f_info:
+            if not f_financials:
+                st.warning(f"Financial statement data limited for **{forensic_ticker}** — analysis may be incomplete.")
+                f_financials = {}
+
             # Distortion analysis
             f_distortion = ForensicLab.analyze_distortion(forensic_ticker, f_info, f_financials)
             f_quality = ForensicLab.calculate_quality_of_earnings(forensic_ticker, f_financials)
@@ -3280,7 +3427,7 @@ with main_tabs[2]:
                     st.markdown(f"⚠️ {flag}")
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
-            st.error(f"Could not find data for {forensic_ticker}")
+            st.warning(f"No data available for **{forensic_ticker}**. Verify the ticker symbol is correct (e.g. AAPL, MSFT, GOOGL).")
 
 # ============================================================================
 # TAB 3: RETAIL EDGE ENGINES
@@ -3305,8 +3452,17 @@ with main_tabs[3]:
         e_insider = DataEngine.get_insider_transactions(edge_ticker)
         e_options = DataEngine.get_options_chain(edge_ticker)
 
-        if e_info and not e_hist.empty:
-            current_price = e_info.get('currentPrice', e_hist['Close'].iloc[-1])
+        # Graceful handling - use whatever data we got
+        if not e_info and e_hist.empty:
+            st.warning(f"No data available for **{edge_ticker}**. Verify the ticker symbol is correct.")
+        else:
+            if not e_info:
+                e_info = {}
+            if e_hist.empty:
+                st.warning(f"Historical price data limited for **{edge_ticker}** — some analysis may be unavailable.")
+
+            current_price = (e_info.get('currentPrice') or e_info.get('regularMarketPrice')
+                            or (float(e_hist['Close'].iloc[-1]) if not e_hist.empty else 0))
 
             st.markdown(f"<div style='font-size: 24px; font-weight: 800; margin: 20px 0;'>{e_info.get('longName', edge_ticker)} - ${current_price:.2f}</div>", unsafe_allow_html=True)
 
@@ -3447,8 +3603,6 @@ with main_tabs[3]:
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
-        else:
-            st.error(f"Could not load data for {edge_ticker}")
 
 # ============================================================================
 # TAB 5: MULTI-ASSET COMPARISON
@@ -3475,7 +3629,7 @@ with main_tabs[4]:
             data_df = data_df.ffill().bfill()
 
             if data_df.empty:
-                st.error("No data available for the selected tickers")
+                st.warning("No price data returned for the selected tickers. Check the symbols and try again.")
             else:
                 # Normalize to base 100
                 first_valid = data_df.iloc[0]
@@ -3539,7 +3693,7 @@ with main_tabs[4]:
                 st.dataframe(perf_df, use_container_width=True, hide_index=True)
 
         except Exception as e:
-            st.error(f"Error loading data: {str(e)}")
+            st.warning(f"Could not load comparison data: {str(e)}")
 
 # ============================================================================
 # TAB 6: MACRO DASHBOARD
