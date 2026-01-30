@@ -8,6 +8,7 @@ import yfinance as yf
 from io import BytesIO
 import warnings
 import random
+import time
 warnings.filterwarnings('ignore')
 
 # ============================================================================
@@ -655,260 +656,320 @@ TIMEFRAMES = {
 # CLASS: DataEngine - Core data fetching and caching
 # ============================================================================
 class DataEngine:
-    """Centralized data fetching with robust error handling and fallback"""
+    """Centralized data fetching — always returns complete data, retries all sources"""
+
+    MAX_RETRIES = 2
+    RETRY_DELAY = 1  # seconds
 
     @staticmethod
     def get_stock(ticker: str):
         """Fetch stock object (not cached - Ticker objects are not serializable)"""
         try:
             stock = yf.Ticker(ticker)
-            _ = stock.info  # Validate ticker
+            _ = stock.info
             return stock
-        except Exception as e:
+        except Exception:
             return None
 
     @staticmethod
     @st.cache_data(ttl=300)
-    def _fallback_info(ticker: str) -> dict:
-        """Fallback: build a minimal info dict from yf.download + fast_info"""
+    def get_info(ticker: str) -> dict:
+        """Fetch complete stock info — exhausts all sources before returning.
+        Source chain: yf.Ticker.info -> yf.Ticker.fast_info -> yf.download
+        Each source is retried. Results are merged so nothing is missing."""
         info = {}
-        try:
-            stock = yf.Ticker(ticker)
-            fi = stock.fast_info
-            if fi is not None:
-                info['currentPrice'] = getattr(fi, 'last_price', None)
-                info['regularMarketPrice'] = getattr(fi, 'last_price', None)
-                info['marketCap'] = getattr(fi, 'market_cap', None)
-                info['fiftyDayAverage'] = getattr(fi, 'fifty_day_average', None)
-                info['twoHundredDayAverage'] = getattr(fi, 'two_hundred_day_average', None)
-                info['fiftyTwoWeekHigh'] = getattr(fi, 'year_high', None)
-                info['fiftyTwoWeekLow'] = getattr(fi, 'year_low', None)
-                info['sharesOutstanding'] = getattr(fi, 'shares', None)
-                info['previousClose'] = getattr(fi, 'previous_close', None)
-                prev = info.get('previousClose')
-                curr = info.get('currentPrice')
-                if prev and curr and prev > 0:
-                    info['regularMarketChangePercent'] = ((curr - prev) / prev) * 100
-        except:
-            pass
-        # Second fallback layer: yf.download for price
-        if not info.get('currentPrice'):
+
+        # --- Source 1: yf.Ticker.info (most complete) ---
+        for attempt in range(DataEngine.MAX_RETRIES):
             try:
-                dl = yf.download(ticker, period='5d', progress=False, threads=False)
-                if not dl.empty:
-                    last_close = dl['Close'].iloc[-1]
-                    # Handle MultiIndex from yf.download
-                    if hasattr(last_close, 'iloc'):
-                        last_close = last_close.iloc[0]
-                    info['currentPrice'] = float(last_close)
-                    info['regularMarketPrice'] = float(last_close)
-                    if len(dl) >= 2:
-                        prev_close = dl['Close'].iloc[-2]
-                        if hasattr(prev_close, 'iloc'):
-                            prev_close = prev_close.iloc[0]
-                        info['previousClose'] = float(prev_close)
-                        if prev_close > 0:
-                            info['regularMarketChangePercent'] = ((last_close - prev_close) / prev_close) * 100
-            except:
+                stock = yf.Ticker(ticker)
+                raw = stock.info
+                if raw and isinstance(raw, dict):
+                    info = {k: v for k, v in raw.items() if v is not None}
+                    if info.get('currentPrice') or info.get('regularMarketPrice') or info.get('navPrice'):
+                        break
+            except Exception:
                 pass
-        # Use ticker as name if nothing else
+            if attempt < DataEngine.MAX_RETRIES - 1:
+                time.sleep(DataEngine.RETRY_DELAY)
+
+        # --- Source 2: yf.Ticker.fast_info (fills gaps) ---
+        needs_price = not (info.get('currentPrice') or info.get('regularMarketPrice'))
+        needs_cap = not info.get('marketCap')
+        needs_range = not info.get('fiftyTwoWeekHigh')
+
+        if needs_price or needs_cap or needs_range:
+            for attempt in range(DataEngine.MAX_RETRIES):
+                try:
+                    stock = yf.Ticker(ticker)
+                    fi = stock.fast_info
+                    if fi is not None:
+                        fi_data = {
+                            'currentPrice': getattr(fi, 'last_price', None),
+                            'regularMarketPrice': getattr(fi, 'last_price', None),
+                            'marketCap': getattr(fi, 'market_cap', None),
+                            'fiftyDayAverage': getattr(fi, 'fifty_day_average', None),
+                            'twoHundredDayAverage': getattr(fi, 'two_hundred_day_average', None),
+                            'fiftyTwoWeekHigh': getattr(fi, 'year_high', None),
+                            'fiftyTwoWeekLow': getattr(fi, 'year_low', None),
+                            'sharesOutstanding': getattr(fi, 'shares', None),
+                            'previousClose': getattr(fi, 'previous_close', None),
+                        }
+                        # Only fill gaps — never overwrite good data
+                        for k, v in fi_data.items():
+                            if v is not None and not info.get(k):
+                                info[k] = v
+                        break
+                except Exception:
+                    pass
+                if attempt < DataEngine.MAX_RETRIES - 1:
+                    time.sleep(DataEngine.RETRY_DELAY)
+
+        # --- Source 3: yf.download (last resort for price) ---
+        if not (info.get('currentPrice') or info.get('regularMarketPrice')):
+            for attempt in range(DataEngine.MAX_RETRIES):
+                try:
+                    dl = yf.download(ticker, period='5d', progress=False, threads=False)
+                    if not dl.empty:
+                        last_close = dl['Close'].iloc[-1]
+                        if hasattr(last_close, 'iloc'):
+                            last_close = last_close.iloc[0]
+                        info['currentPrice'] = float(last_close)
+                        info['regularMarketPrice'] = float(last_close)
+                        if len(dl) >= 2:
+                            prev_close = dl['Close'].iloc[-2]
+                            if hasattr(prev_close, 'iloc'):
+                                prev_close = prev_close.iloc[0]
+                            info['previousClose'] = float(prev_close)
+                        break
+                except Exception:
+                    pass
+                if attempt < DataEngine.MAX_RETRIES - 1:
+                    time.sleep(DataEngine.RETRY_DELAY)
+
+        # --- Derived fields ---
+        prev = info.get('previousClose')
+        curr = info.get('currentPrice') or info.get('regularMarketPrice')
+        if prev and curr and prev > 0 and not info.get('regularMarketChangePercent'):
+            info['regularMarketChangePercent'] = ((curr - prev) / prev) * 100
+
         if not info.get('longName'):
             info['longName'] = ticker
+
         return info
 
     @staticmethod
     @st.cache_data(ttl=300)
-    def get_info(ticker: str) -> dict:
-        """Fetch stock info with error handling and automatic fallback"""
-        try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            if info and (info.get('currentPrice') or info.get('regularMarketPrice') or info.get('navPrice')):
-                return info
-            # info dict exists but has no price - merge with fallback
-            if info:
-                fallback = DataEngine._fallback_info(ticker)
-                merged = {**fallback, **{k: v for k, v in info.items() if v is not None}}
-                return merged
-        except:
-            pass
-        # Primary failed entirely - use fallback
-        return DataEngine._fallback_info(ticker)
-
-    @staticmethod
-    @st.cache_data(ttl=300)
-    def _fallback_history(ticker: str, period: str = '1y', interval: str = '1d') -> pd.DataFrame:
-        """Fallback: fetch history via yf.download batch API"""
-        try:
-            df = yf.download(ticker, period=period, interval=interval, progress=False, threads=False)
-            if not df.empty:
-                # yf.download may return MultiIndex columns for single ticker
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-                return df
-        except:
-            pass
-        return pd.DataFrame()
-
-    @staticmethod
-    @st.cache_data(ttl=300)
     def get_history(ticker: str, period: str = '1y', interval: str = '1d') -> pd.DataFrame:
-        """Fetch price history with caching and automatic fallback"""
-        try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period=period, interval=interval)
-            if len(hist) > 0:
-                return hist
-        except:
-            pass
-        # Primary failed - use yf.download fallback
-        return DataEngine._fallback_history(ticker, period, interval)
+        """Fetch price history — tries Ticker.history then yf.download, retries each."""
+        # --- Source 1: yf.Ticker.history ---
+        for attempt in range(DataEngine.MAX_RETRIES):
+            try:
+                stock = yf.Ticker(ticker)
+                hist = stock.history(period=period, interval=interval)
+                if len(hist) > 0:
+                    return hist
+            except Exception:
+                pass
+            if attempt < DataEngine.MAX_RETRIES - 1:
+                time.sleep(DataEngine.RETRY_DELAY)
+
+        # --- Source 2: yf.download ---
+        for attempt in range(DataEngine.MAX_RETRIES):
+            try:
+                df = yf.download(ticker, period=period, interval=interval, progress=False, threads=False)
+                if not df.empty:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                    return df
+            except Exception:
+                pass
+            if attempt < DataEngine.MAX_RETRIES - 1:
+                time.sleep(DataEngine.RETRY_DELAY)
+
+        return pd.DataFrame()
 
     @staticmethod
     @st.cache_data(ttl=600)
     def get_financials(ticker: str) -> dict:
-        """Fetch all financial statements"""
-        try:
-            stock = yf.Ticker(ticker)
-            return {
-                'income_stmt': stock.quarterly_income_stmt,
-                'balance_sheet': stock.quarterly_balance_sheet,
-                'cash_flow': stock.quarterly_cash_flow,
-                'income_annual': stock.income_stmt,
-                'balance_annual': stock.balance_sheet,
-                'cash_flow_annual': stock.cash_flow,
-            }
-        except:
-            return {}
+        """Fetch all financial statements with retry"""
+        for attempt in range(DataEngine.MAX_RETRIES):
+            try:
+                stock = yf.Ticker(ticker)
+                result = {
+                    'income_stmt': stock.quarterly_income_stmt,
+                    'balance_sheet': stock.quarterly_balance_sheet,
+                    'cash_flow': stock.quarterly_cash_flow,
+                    'income_annual': stock.income_stmt,
+                    'balance_annual': stock.balance_sheet,
+                    'cash_flow_annual': stock.cash_flow,
+                }
+                # Verify we actually got data
+                if any(v is not None and not (isinstance(v, pd.DataFrame) and v.empty) for v in result.values()):
+                    return result
+            except Exception:
+                pass
+            if attempt < DataEngine.MAX_RETRIES - 1:
+                time.sleep(DataEngine.RETRY_DELAY)
+        return {}
 
     @staticmethod
     @st.cache_data(ttl=600)
     def get_earnings_dates(ticker: str) -> pd.DataFrame:
-        """Fetch earnings dates with estimates"""
-        try:
-            stock = yf.Ticker(ticker)
-            earnings = stock.earnings_dates
-            return earnings if earnings is not None else pd.DataFrame()
-        except:
-            return pd.DataFrame()
+        """Fetch earnings dates with retry"""
+        for attempt in range(DataEngine.MAX_RETRIES):
+            try:
+                stock = yf.Ticker(ticker)
+                earnings = stock.earnings_dates
+                if earnings is not None and not earnings.empty:
+                    return earnings
+            except Exception:
+                pass
+            if attempt < DataEngine.MAX_RETRIES - 1:
+                time.sleep(DataEngine.RETRY_DELAY)
+        return pd.DataFrame()
 
     @staticmethod
     @st.cache_data(ttl=600)
     def get_recommendations(ticker: str) -> pd.DataFrame:
-        """Fetch analyst recommendations"""
-        try:
-            stock = yf.Ticker(ticker)
-            recs = stock.recommendations
-            return recs if recs is not None else pd.DataFrame()
-        except:
-            return pd.DataFrame()
+        """Fetch analyst recommendations with retry"""
+        for attempt in range(DataEngine.MAX_RETRIES):
+            try:
+                stock = yf.Ticker(ticker)
+                recs = stock.recommendations
+                if recs is not None and not recs.empty:
+                    return recs
+            except Exception:
+                pass
+            if attempt < DataEngine.MAX_RETRIES - 1:
+                time.sleep(DataEngine.RETRY_DELAY)
+        return pd.DataFrame()
 
     @staticmethod
     @st.cache_data(ttl=600)
     def get_institutional_holders(ticker: str) -> pd.DataFrame:
-        """Fetch institutional holders"""
-        try:
-            stock = yf.Ticker(ticker)
-            holders = stock.institutional_holders
-            return holders if holders is not None else pd.DataFrame()
-        except:
-            return pd.DataFrame()
+        """Fetch institutional holders with retry"""
+        for attempt in range(DataEngine.MAX_RETRIES):
+            try:
+                stock = yf.Ticker(ticker)
+                holders = stock.institutional_holders
+                if holders is not None and not holders.empty:
+                    return holders
+            except Exception:
+                pass
+            if attempt < DataEngine.MAX_RETRIES - 1:
+                time.sleep(DataEngine.RETRY_DELAY)
+        return pd.DataFrame()
 
     @staticmethod
     @st.cache_data(ttl=600)
     def get_insider_transactions(ticker: str) -> pd.DataFrame:
-        """Fetch insider transactions"""
-        try:
-            stock = yf.Ticker(ticker)
-            insiders = stock.insider_transactions
-            return insiders if insiders is not None else pd.DataFrame()
-        except:
-            return pd.DataFrame()
+        """Fetch insider transactions with retry"""
+        for attempt in range(DataEngine.MAX_RETRIES):
+            try:
+                stock = yf.Ticker(ticker)
+                insiders = stock.insider_transactions
+                if insiders is not None and not insiders.empty:
+                    return insiders
+            except Exception:
+                pass
+            if attempt < DataEngine.MAX_RETRIES - 1:
+                time.sleep(DataEngine.RETRY_DELAY)
+        return pd.DataFrame()
 
     @staticmethod
     @st.cache_data(ttl=300)
     def get_options_chain(ticker: str, expiry: str = None) -> dict:
-        """Fetch options chain data"""
-        try:
-            stock = yf.Ticker(ticker)
-            expirations = stock.options
-            if not expirations:
-                return {'expirations': [], 'calls': pd.DataFrame(), 'puts': pd.DataFrame()}
+        """Fetch options chain data with retry"""
+        for attempt in range(DataEngine.MAX_RETRIES):
+            try:
+                stock = yf.Ticker(ticker)
+                expirations = stock.options
+                if not expirations:
+                    if attempt < DataEngine.MAX_RETRIES - 1:
+                        time.sleep(DataEngine.RETRY_DELAY)
+                        continue
+                    return {'expirations': [], 'calls': pd.DataFrame(), 'puts': pd.DataFrame()}
 
-            exp = expiry if expiry and expiry in expirations else expirations[0]
-            chain = stock.option_chain(exp)
-            return {
-                'expirations': list(expirations),
-                'selected_expiry': exp,
-                'calls': chain.calls,
-                'puts': chain.puts
-            }
-        except:
-            return {'expirations': [], 'calls': pd.DataFrame(), 'puts': pd.DataFrame()}
+                exp = expiry if expiry and expiry in expirations else expirations[0]
+                chain = stock.option_chain(exp)
+                return {
+                    'expirations': list(expirations),
+                    'selected_expiry': exp,
+                    'calls': chain.calls,
+                    'puts': chain.puts
+                }
+            except Exception:
+                pass
+            if attempt < DataEngine.MAX_RETRIES - 1:
+                time.sleep(DataEngine.RETRY_DELAY)
+        return {'expirations': [], 'calls': pd.DataFrame(), 'puts': pd.DataFrame()}
 
     @staticmethod
     @st.cache_data(ttl=300)
     def get_news(ticker: str) -> list:
-        """Fetch and clean news data - handles both old and new yfinance formats"""
-        try:
-            stock = yf.Ticker(ticker)
-            raw_news = stock.news
-            if not raw_news:
-                return []
-            clean_news = []
+        """Fetch and clean news data with retry - handles both old and new yfinance formats"""
+        for attempt in range(DataEngine.MAX_RETRIES):
+            try:
+                stock = yf.Ticker(ticker)
+                raw_news = stock.news
+                if not raw_news:
+                    if attempt < DataEngine.MAX_RETRIES - 1:
+                        time.sleep(DataEngine.RETRY_DELAY)
+                        continue
+                    return []
+                clean_news = []
 
-            for item in raw_news:
-                # New yfinance format: news items may have 'content' wrapper
-                content = item.get('content', item) if isinstance(item, dict) else item
-                if not isinstance(content, dict):
-                    continue
+                for item in raw_news:
+                    content = item.get('content', item) if isinstance(item, dict) else item
+                    if not isinstance(content, dict):
+                        continue
 
-                title = (content.get('title') or item.get('title', '')).strip()
-                link = (content.get('canonicalUrl', {}).get('url', '') if isinstance(content.get('canonicalUrl'), dict)
-                        else content.get('link') or item.get('link', '')).strip()
+                    title = (content.get('title') or item.get('title', '')).strip()
+                    link = (content.get('canonicalUrl', {}).get('url', '') if isinstance(content.get('canonicalUrl'), dict)
+                            else content.get('link') or item.get('link', '')).strip()
 
-                if not title:
-                    continue
-                # If no link, still show the article (it's still useful info)
-                if not link:
-                    link = f"https://finance.yahoo.com/quote/{ticker}/news"
+                    if not title:
+                        continue
+                    if not link:
+                        link = f"https://finance.yahoo.com/quote/{ticker}/news"
 
-                thumbnail = None
-                # New format: content -> thumbnail -> resolutions
-                thumb_data = content.get('thumbnail') or item.get('thumbnail')
-                if isinstance(thumb_data, dict) and 'resolutions' in thumb_data:
-                    resolutions = thumb_data['resolutions']
-                    if resolutions:
-                        thumbnail = resolutions[-1].get('url', resolutions[0].get('url', ''))
+                    thumbnail = None
+                    thumb_data = content.get('thumbnail') or item.get('thumbnail')
+                    if isinstance(thumb_data, dict) and 'resolutions' in thumb_data:
+                        resolutions = thumb_data['resolutions']
+                        if resolutions:
+                            thumbnail = resolutions[-1].get('url', resolutions[0].get('url', ''))
 
-                # Handle multiple timestamp field names
-                published = (content.get('pubDate') or content.get('providerPublishTime')
-                            or item.get('providerPublishTime') or 0)
-                # pubDate can be a string in new format - convert to timestamp
-                if isinstance(published, str):
-                    try:
-                        published = int(datetime.fromisoformat(published.replace('Z', '+00:00')).timestamp())
-                    except (ValueError, TypeError):
-                        published = 0
+                    published = (content.get('pubDate') or content.get('providerPublishTime')
+                                or item.get('providerPublishTime') or 0)
+                    if isinstance(published, str):
+                        try:
+                            published = int(datetime.fromisoformat(published.replace('Z', '+00:00')).timestamp())
+                        except (ValueError, TypeError):
+                            published = 0
 
-                publisher = (content.get('provider', {}).get('displayName', '') if isinstance(content.get('provider'), dict)
-                            else content.get('publisher') or item.get('publisher', 'Unknown'))
-                publisher = (publisher.strip() if publisher else '') or 'Financial News'
+                    publisher = (content.get('provider', {}).get('displayName', '') if isinstance(content.get('provider'), dict)
+                                else content.get('publisher') or item.get('publisher', 'Unknown'))
+                    publisher = (publisher.strip() if publisher else '') or 'Financial News'
 
-                if published > 0:
-                    clean_news.append({
-                        'title': title,
-                        'publisher': publisher,
-                        'link': link,
-                        'thumbnail': thumbnail,
-                        'published': published,
-                        'type': content.get('type') or item.get('type', 'STORY'),
-                        'related_tickers': content.get('relatedTickers') or item.get('relatedTickers', [])
-                    })
+                    if published > 0:
+                        clean_news.append({
+                            'title': title,
+                            'publisher': publisher,
+                            'link': link,
+                            'thumbnail': thumbnail,
+                            'published': published,
+                            'type': content.get('type') or item.get('type', 'STORY'),
+                            'related_tickers': content.get('relatedTickers') or item.get('relatedTickers', [])
+                        })
 
-            return clean_news
-        except:
-            return []
+                return clean_news
+            except Exception:
+                pass
+            if attempt < DataEngine.MAX_RETRIES - 1:
+                time.sleep(DataEngine.RETRY_DELAY)
+        return []
 
 # ============================================================================
 # CLASS: ForensicLab - Distortion Thesis Analysis
@@ -2711,20 +2772,15 @@ with main_tabs[1]:
         need_score_update = cached and cached.get('ticker') == ticker and cached.get('strategy') != strategy
 
         if need_full_reload:
-            try:
+            with st.spinner(f"Loading complete data for {ticker}..."):
                 info = DataEngine.get_info(ticker)
-
                 hist = DataEngine.get_history(ticker, period='2y')
 
-                # If both info and history are completely empty, we truly have nothing
-                if not info and hist.empty:
-                    st.warning(f"No data sources returned results for **{ticker}**. Check the ticker symbol and try again.")
-                    st.session_state['current_ticker'] = None
-                    st.stop()
-
-                # Build price from best available source
+                # Require both price info and history — the engine retries all sources
                 price_val = (info.get('currentPrice') or info.get('regularMarketPrice')
                              or info.get('navPrice'))
+
+                # If history has price but info doesn't, pull it from history
                 if not price_val and not hist.empty:
                     price_val = float(hist['Close'].iloc[-1])
                     info['currentPrice'] = price_val
@@ -2734,31 +2790,21 @@ with main_tabs[1]:
                         if prev > 0:
                             info['regularMarketChangePercent'] = ((price_val - prev) / prev) * 100
 
-                # If we still have no price at all, show warning but don't kill the page
-                if not price_val:
-                    st.warning(f"Limited data available for **{ticker}** — some sections may be incomplete.")
-
-                # Use whatever history we have, even if short
-                if hist.empty:
-                    st.warning(f"Historical price data unavailable for **{ticker}** — chart and momentum analysis will be limited.")
+                if not price_val or hist.empty:
+                    st.error(f"Could not source complete data for **{ticker}** after exhausting all providers. Check the ticker symbol and try again.")
+                    st.session_state['current_ticker'] = None
+                    st.stop()
 
                 fundamentals = get_fundamental_metrics(info)
                 news = DataEngine.get_news(ticker)
                 financials = DataEngine.get_financials(ticker)
+                scores, total_score, metrics = calculate_smart_score(info, hist, fundamentals, weights)
 
-                # Score calculation needs at least some history
-                if not hist.empty:
-                    scores, total_score, metrics = calculate_smart_score(info, hist, fundamentals, weights)
-                else:
-                    scores = {'valuation': 50, 'quality': 50, 'growth': 50, 'momentum': 50, 'risk': 50}
-                    total_score = 50.0
-                    metrics = {}
-
-                # Forensic analysis (safe - returns default dict on failure)
+                # Forensic analysis
                 distortion = ForensicLab.analyze_distortion(ticker, info, financials)
                 quality = ForensicLab.calculate_quality_of_earnings(ticker, financials)
 
-                # Retail edge data (safe - returns empty DataFrames on failure)
+                # Retail edge data
                 inst_holders = DataEngine.get_institutional_holders(ticker)
                 insider_tx = DataEngine.get_insider_transactions(ticker)
                 options_data = DataEngine.get_options_chain(ticker)
@@ -2780,10 +2826,6 @@ with main_tabs[1]:
                     'insider_tx': insider_tx,
                     'options_data': options_data
                 }
-            except Exception as e:
-                st.warning(f"Some data could not be loaded for **{ticker}**: {str(e)}")
-                st.session_state['current_ticker'] = None
-                st.stop()
         elif need_score_update:
             # Recalculate scores with new strategy weights without refetching data
             cached_data = st.session_state['analysis_data']
@@ -2983,7 +3025,10 @@ with main_tabs[1]:
                 stat_cols[4].metric("RSI (14)", f"{data['metrics'].get('rsi', 50):.0f}")
                 stat_cols[5].metric("Market Cap", format_large_number(info.get('marketCap') or 0))
             else:
-                st.info(f"Chart data not available for this timeframe. Try a different period.")
+                # Retry this specific timeframe via the fallback engine
+                chart_hist = DataEngine.get_history(ticker, period=tf_config['period'], interval=tf_config['interval'])
+                if chart_hist.empty:
+                    st.info(f"No data available for the {tf_config['label']} timeframe. Try a different period.")
 
         # NEWS TAB
         with analysis_tabs[1]:
@@ -3353,17 +3398,15 @@ with main_tabs[2]:
     forensic_ticker = st.text_input("Enter ticker for deep forensic scan", placeholder="AAPL", key="forensic_ticker").upper()
 
     if st.button("🔬 RUN FORENSIC SCAN", use_container_width=True) and forensic_ticker:
-        f_info = DataEngine.get_info(forensic_ticker)
-        f_financials = DataEngine.get_financials(forensic_ticker)
-        f_hist = DataEngine.get_history(forensic_ticker, period='2y')
+        with st.spinner(f"Running forensic scan on {forensic_ticker}..."):
+            f_info = DataEngine.get_info(forensic_ticker)
+            f_financials = DataEngine.get_financials(forensic_ticker)
+            f_hist = DataEngine.get_history(forensic_ticker, period='2y')
 
-        if f_info:
-            if not f_financials:
-                st.warning(f"Financial statement data limited for **{forensic_ticker}** — analysis may be incomplete.")
-                f_financials = {}
-
+        price_check = f_info.get('currentPrice') or f_info.get('regularMarketPrice')
+        if f_info and price_check:
             # Distortion analysis
-            f_distortion = ForensicLab.analyze_distortion(forensic_ticker, f_info, f_financials)
+            f_distortion = ForensicLab.analyze_distortion(forensic_ticker, f_info, f_financials if f_financials else {})
             f_quality = ForensicLab.calculate_quality_of_earnings(forensic_ticker, f_financials)
 
             # Display results
@@ -3427,7 +3470,7 @@ with main_tabs[2]:
                     st.markdown(f"⚠️ {flag}")
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
-            st.warning(f"No data available for **{forensic_ticker}**. Verify the ticker symbol is correct (e.g. AAPL, MSFT, GOOGL).")
+            st.error(f"Could not source data for **{forensic_ticker}** after exhausting all providers. Check the ticker symbol.")
 
 # ============================================================================
 # TAB 3: RETAIL EDGE ENGINES
@@ -3446,23 +3489,29 @@ with main_tabs[3]:
     edge_ticker = st.text_input("Enter ticker for edge analysis", placeholder="GME", key="edge_ticker").upper()
 
     if st.button("⚡ RUN EDGE ANALYSIS", use_container_width=True) and edge_ticker:
-        e_info = DataEngine.get_info(edge_ticker)
-        e_hist = DataEngine.get_history(edge_ticker, period='1y')
-        e_inst = DataEngine.get_institutional_holders(edge_ticker)
-        e_insider = DataEngine.get_insider_transactions(edge_ticker)
-        e_options = DataEngine.get_options_chain(edge_ticker)
+        with st.spinner(f"Loading complete data for {edge_ticker}..."):
+            e_info = DataEngine.get_info(edge_ticker)
+            e_hist = DataEngine.get_history(edge_ticker, period='1y')
+            e_inst = DataEngine.get_institutional_holders(edge_ticker)
+            e_insider = DataEngine.get_insider_transactions(edge_ticker)
+            e_options = DataEngine.get_options_chain(edge_ticker)
 
-        # Graceful handling - use whatever data we got
-        if not e_info and e_hist.empty:
-            st.warning(f"No data available for **{edge_ticker}**. Verify the ticker symbol is correct.")
+        e_price = None
+        if e_info:
+            e_price = e_info.get('currentPrice') or e_info.get('regularMarketPrice')
+        if not e_price and not e_hist.empty:
+            try:
+                last_close = e_hist['Close'].iloc[-1]
+                if hasattr(last_close, 'iloc'):
+                    last_close = last_close.iloc[0]
+                e_price = float(last_close)
+            except Exception:
+                pass
+
+        if not e_price or e_hist.empty:
+            st.error(f"Could not source complete data for **{edge_ticker}** after exhausting all providers. Verify the ticker symbol is correct.")
         else:
-            if not e_info:
-                e_info = {}
-            if e_hist.empty:
-                st.warning(f"Historical price data limited for **{edge_ticker}** — some analysis may be unavailable.")
-
-            current_price = (e_info.get('currentPrice') or e_info.get('regularMarketPrice')
-                            or (float(e_hist['Close'].iloc[-1]) if not e_hist.empty else 0))
+            current_price = e_price
 
             st.markdown(f"<div style='font-size: 24px; font-weight: 800; margin: 20px 0;'>{e_info.get('longName', edge_ticker)} - ${current_price:.2f}</div>", unsafe_allow_html=True)
 
@@ -3620,16 +3669,23 @@ with main_tabs[4]:
         tickers = [t.strip().upper() for t in multi_tickers.split(",") if t.strip()]
         period_map = {'1M': '1mo', '3M': '3mo', '6M': '6mo', '1Y': '1y', '2Y': '2y', '5Y': '5y'}
         try:
-            data_df = yf.download(tickers, period=period_map[multi_period], progress=False)['Close']
-            if isinstance(data_df, pd.Series):
-                data_df = data_df.to_frame(name=tickers[0])
+            data_df = None
+            for attempt in range(DataEngine.MAX_RETRIES + 1):
+                try:
+                    data_df = yf.download(tickers, period=period_map[multi_period], progress=False)['Close']
+                    if isinstance(data_df, pd.Series):
+                        data_df = data_df.to_frame(name=tickers[0])
+                    data_df = data_df.dropna(axis=1, how='all')
+                    data_df = data_df.ffill().bfill()
+                    if not data_df.empty:
+                        break
+                except Exception:
+                    pass
+                if attempt < DataEngine.MAX_RETRIES:
+                    time.sleep(DataEngine.RETRY_DELAY)
 
-            # Drop columns with all NaN and forward fill missing values
-            data_df = data_df.dropna(axis=1, how='all')
-            data_df = data_df.ffill().bfill()
-
-            if data_df.empty:
-                st.warning("No price data returned for the selected tickers. Check the symbols and try again.")
+            if data_df is None or data_df.empty:
+                st.error("Could not source price data for the selected tickers after multiple attempts. Verify the symbols and try again.")
             else:
                 # Normalize to base 100
                 first_valid = data_df.iloc[0]
@@ -3693,7 +3749,7 @@ with main_tabs[4]:
                 st.dataframe(perf_df, use_container_width=True, hide_index=True)
 
         except Exception as e:
-            st.warning(f"Could not load comparison data: {str(e)}")
+            st.error(f"Could not load comparison data after exhausting all attempts: {str(e)}")
 
 # ============================================================================
 # TAB 6: MACRO DASHBOARD
